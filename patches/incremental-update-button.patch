@@ -1,0 +1,215 @@
+diff --git a/qce-v4-tool/app/page.tsx b/qce-v4-tool/app/page.tsx
+index ebaaff4..7346e75 100644
+--- a/qce-v4-tool/app/page.tsx
++++ b/qce-v4-tool/app/page.tsx
+@@ -497,6 +497,32 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+     }
+   }, [addNotification])
+ 
++  // 增量更新：只拉取该会话自上次成功导出以来的新消息，避免每次都重新导出全部记录。
++  const handleIncrementalUpdate = useCallback(async (
++    type: 'group' | 'friend',
++    id: string,
++    name: string,
++    peer: { chatType: number, peerUid: string },
++    lastExportAt: number,
++  ) => {
++    const peerUin = type === 'group' ? id : friends.find((f) => f.uid === id)?.uin
++    const success = await createTask({
++      chatType: peer.chatType,
++      peerUid: peer.peerUid,
++      peerUin,
++      sessionName: name,
++      format: "JSON",
++      startTime: new Date(lastExportAt).toISOString(),
++      endTime: new Date().toISOString(),
++      includeRecalled: false,
++      includeSystemMessages: true,
++      filterPureImageMessages: false,
++    })
++    if (success) {
++      tasksLoadedRef.current = false
++    }
++  }, [createTask, friends])
++
+   const handleExportGroupAvatars = useCallback(async (groupCode: string, groupName: string) => {
+     const loadingId = addNotification('info', '正在导出', `正在导出群"${groupName}"的成员头像...`)
+ 
+@@ -1895,6 +1921,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+                       onExportGroupAvatars={handleExportGroupAvatars}
+                       onOpenEssenceModal={handleOpenEssenceModal}
+                       onOpenGroupFilesModal={handleOpenGroupFilesModal}
++                      onIncrementalUpdate={handleIncrementalUpdate}
+                     />
+                   </>
+                 )}
+diff --git a/qce-v4-tool/components/ui/session-list.tsx b/qce-v4-tool/components/ui/session-list.tsx
+index 84511f3..89c8e82 100644
+--- a/qce-v4-tool/components/ui/session-list.tsx
++++ b/qce-v4-tool/components/ui/session-list.tsx
+@@ -73,6 +73,17 @@ export interface SessionListProps {
+   onExportGroupAvatars?: (groupCode: string, groupName: string) => void
+   onOpenEssenceModal?: (groupCode: string, groupName: string) => void
+   onOpenGroupFilesModal?: (groupCode: string, groupName: string) => void
++  /**
++   * 增量更新：只拉取自上次成功导出以来的新消息。
++   * `lastExportAt` 为上次成功导出的时间戳（毫秒），没有历史导出时不会渲染按钮。
++   */
++  onIncrementalUpdate?: (
++    type: 'group' | 'friend',
++    id: string,
++    name: string,
++    peer: { chatType: number, peerUid: string },
++    lastExportAt: number,
++  ) => void
+ }
+ 
+ 
+@@ -97,6 +108,7 @@ function SessionListComponent({
+   onExportGroupAvatars,
+   onOpenEssenceModal,
+   onOpenGroupFilesModal,
++  onIncrementalUpdate,
+ }: SessionListProps) {
+   const {
+     search,
+@@ -351,12 +363,24 @@ function SessionListComponent({
+             >
+               预览
+             </button>
++            {/* === QCE-CUSTOM-ADDON: 已有历史导出时主按钮变"更新"，完整导出移入下拉菜单。见 /qce-custom-addon/README.md === */}
+             {isGroup && group ? (
+               <div className="flex items-center bg-white dark:bg-neutral-900 border border-black/5 dark:border-white/10 shadow-[0_1px_2px_rgba(0,0,0,0.04)] rounded-full overflow-hidden hover:border-black/10 transition-all">
+                 <button
+                   className="inline-flex items-center justify-center h-7 pl-3 pr-2 text-[12px] font-medium text-neutral-700 dark:text-neutral-200 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-50 dark:hover:bg-white/5 transition-colors border-r border-neutral-200/80 dark:border-white/10"
++                  title={item.lastSuccessfulExportAt ? "只拉取自上次导出以来的新消息" : undefined}
+                   onClick={(e: React.MouseEvent) => {
+                     e.stopPropagation()
++                    if (item.lastSuccessfulExportAt) {
++                      onIncrementalUpdate?.(
++                        item.type,
++                        item.id,
++                        item.name,
++                        { chatType: 2, peerUid: item.id },
++                        item.lastSuccessfulExportAt,
++                      )
++                      return
++                    }
+                     onOpenTaskWizard?.({
+                       chatType: 2,
+                       peerUid: item.id,
+@@ -365,7 +389,7 @@ function SessionListComponent({
+                     })
+                   }}
+                 >
+-                  导出
++                  {item.lastSuccessfulExportAt ? "更新" : "导出"}
+                 </button>
+                 <DropdownMenu>
+                   <DropdownMenuTrigger asChild>
+@@ -377,6 +401,18 @@ function SessionListComponent({
+                     </button>
+                   </DropdownMenuTrigger>
+                   <DropdownMenuContent align="end" className="w-40">
++                    {!!item.lastSuccessfulExportAt && (
++                      <DropdownMenuItem
++                        onClick={() => onOpenTaskWizard?.({
++                          chatType: 2,
++                          peerUid: item.id,
++                          peerUin: item.id,
++                          sessionName: item.name,
++                        })}
++                      >
++                        重新导出全部
++                      </DropdownMenuItem>
++                    )}
+                     <DropdownMenuItem
+                       disabled={avatarExportLoading === group.groupCode}
+                       onClick={() => onExportGroupAvatars?.(group.groupCode, group.groupName)}
+@@ -393,28 +429,69 @@ function SessionListComponent({
+                 </DropdownMenu>
+               </div>
+             ) : (
+-              <button
+-                className="inline-flex items-center justify-center h-7 px-3 text-[12px] font-medium text-neutral-700 dark:text-neutral-200 bg-white dark:bg-neutral-900 border border-black/5 dark:border-white/10 shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:border-black/10 hover:bg-neutral-50 dark:hover:bg-white/5 hover:text-neutral-900 dark:hover:text-white rounded-full transition-all"
+-                onClick={(e: React.MouseEvent) => {
+-                  e.stopPropagation()
+-                  onOpenTaskWizard?.({
+-                    chatType: isGroup ? 2 : 1,
+-                    peerUid: item.id,
+-                    peerUin: isGroup
+-                      ? item.id
+-                      : String((item.raw as Friend).uin || ""),
+-                    sessionName: item.name,
+-                  })
+-                }}
+-              >
+-                导出
+-              </button>
++              <div className="flex items-center bg-white dark:bg-neutral-900 border border-black/5 dark:border-white/10 shadow-[0_1px_2px_rgba(0,0,0,0.04)] rounded-full overflow-hidden hover:border-black/10 transition-all">
++                <button
++                  className={[
++                    "inline-flex items-center justify-center h-7 text-[12px] font-medium text-neutral-700 dark:text-neutral-200 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-50 dark:hover:bg-white/5 transition-colors",
++                    item.lastSuccessfulExportAt ? "pl-3 pr-2 border-r border-neutral-200/80 dark:border-white/10" : "px-3",
++                  ].join(" ")}
++                  title={item.lastSuccessfulExportAt ? "只拉取自上次导出以来的新消息" : undefined}
++                  onClick={(e: React.MouseEvent) => {
++                    e.stopPropagation()
++                    if (item.lastSuccessfulExportAt) {
++                      onIncrementalUpdate?.(
++                        item.type,
++                        item.id,
++                        item.name,
++                        { chatType: 1, peerUid: item.id },
++                        item.lastSuccessfulExportAt,
++                      )
++                      return
++                    }
++                    onOpenTaskWizard?.({
++                      chatType: isGroup ? 2 : 1,
++                      peerUid: item.id,
++                      peerUin: isGroup
++                        ? item.id
++                        : String((item.raw as Friend).uin || ""),
++                      sessionName: item.name,
++                    })
++                  }}
++                >
++                  {item.lastSuccessfulExportAt ? "更新" : "导出"}
++                </button>
++                {!!item.lastSuccessfulExportAt && (
++                  <DropdownMenu>
++                    <DropdownMenuTrigger asChild>
++                      <button
++                        className="inline-flex items-center justify-center h-7 pl-1.5 pr-2 text-neutral-500 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-50 dark:hover:bg-white/5 transition-colors outline-none"
++                        onClick={(e: React.MouseEvent) => e.stopPropagation()}
++                      >
++                        <ChevronDown className="w-3.5 h-3.5" />
++                      </button>
++                    </DropdownMenuTrigger>
++                    <DropdownMenuContent align="end" className="w-40">
++                      <DropdownMenuItem
++                        onClick={() => onOpenTaskWizard?.({
++                          chatType: isGroup ? 2 : 1,
++                          peerUid: item.id,
++                          peerUin: isGroup ? item.id : String((item.raw as Friend).uin || ""),
++                          sessionName: item.name,
++                        })}
++                      >
++                        重新导出全部
++                      </DropdownMenuItem>
++                    </DropdownMenuContent>
++                  </DropdownMenu>
++                )}
++              </div>
+             )}
++            {/* === END QCE-CUSTOM-ADDON === */}
+           </div>
+         )}
+       </div>
+     )
+-  }, [batchMode, selectedItems, avatarExportLoading, onToggleItem, onPreviewChat, onOpenTaskWizard, onExportGroupAvatars, onOpenEssenceModal, onOpenGroupFilesModal])
++  }, [batchMode, selectedItems, avatarExportLoading, onToggleItem, onPreviewChat, onOpenTaskWizard, onExportGroupAvatars, onOpenEssenceModal, onOpenGroupFilesModal, onIncrementalUpdate])
+ 
+   return (
+     <div className="space-y-0">

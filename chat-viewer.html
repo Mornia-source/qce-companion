@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>QCE 聊天记录查看器（本地附加工具）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f4f5;
+    --panel: #ffffff;
+    --text: #1c1c1e;
+    --muted: #8a8a8e;
+    --bubble-other: #ffffff;
+    --bubble-self: #95ec69;
+    --border: rgba(0,0,0,0.08);
+    --accent: #317CFF;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e0e10;
+      --panel: #17171a;
+      --text: #f2f2f3;
+      --muted: #8e8e93;
+      --bubble-other: #2c2c2e;
+      --bubble-self: #2a6b3a;
+      --border: rgba(255,255,255,0.08);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 14px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-size: 15px;
+    margin: 0;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  header .meta {
+    font-size: 12px;
+    color: var(--muted);
+    flex: 1;
+    min-width: 120px;
+  }
+  .file-btn {
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .file-btn:hover { border-color: var(--accent); color: var(--accent); }
+  input[type=file] { display: none; }
+  input[type=search] {
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    outline: none;
+    min-width: 160px;
+  }
+  #drop {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  #empty {
+    margin: auto;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+    max-width: 360px;
+    line-height: 1.8;
+  }
+  #empty b { color: var(--text); }
+  .row {
+    display: flex;
+    gap: 8px;
+    max-width: 720px;
+    margin: 6px 0;
+  }
+  .row.self { flex-direction: row-reverse; margin-left: auto; }
+  .avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    flex-shrink: 0;
+    background: linear-gradient(135deg,#8fb2ff,#5c7cfa);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+  }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .bubble-col { display: flex; flex-direction: column; max-width: calc(100% - 44px); }
+  .row.self .bubble-col { align-items: flex-end; }
+  .sender-name {
+    font-size: 11px;
+    color: var(--muted);
+    margin: 0 4px 2px;
+  }
+  .bubble {
+    background: var(--bubble-other);
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    border-radius: 12px;
+    font-size: 13.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .row.self .bubble {
+    background: var(--bubble-self);
+    border-color: transparent;
+    color: #0b2b0f;
+  }
+  @media (prefers-color-scheme: dark) {
+    .row.self .bubble { color: #eafff0; }
+  }
+  .bubble.system {
+    align-self: center;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 11.5px;
+    text-align: center;
+    margin: 4px auto;
+  }
+  .time {
+    font-size: 10.5px;
+    color: var(--muted);
+    margin: 2px 4px 0;
+  }
+  .day-sep {
+    text-align: center;
+    color: var(--muted);
+    font-size: 11px;
+    margin: 14px 0 6px;
+  }
+  /* === QCE-CUSTOM-ADDON: 图片/转发/引用/表情渲染样式 === */
+  .msg-image {
+    max-width: 260px;
+    max-height: 260px;
+    border-radius: 10px;
+    cursor: zoom-in;
+    display: block;
+    object-fit: cover;
+  }
+  .msg-sticker {
+    max-width: 140px;
+    max-height: 140px;
+    display: block;
+  }
+  .media-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bubble-other);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 12.5px;
+  }
+  .row.self .media-chip { background: var(--bubble-self); border-color: transparent; color: #0b2b0f; }
+  @media (prefers-color-scheme: dark) { .row.self .media-chip { color: #eafff0; } }
+  .quote {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: rgba(127,127,127,0.12);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    color: var(--muted);
+    max-width: 100%;
+  }
+  .quote b { color: var(--text); font-weight: 600; }
+  .quote .quote-content { word-break: break-word; white-space: pre-wrap; }
+  .fwd-card {
+    background: var(--bubble-other);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 12px;
+    font-size: 13px;
+    max-width: 320px;
+  }
+  .row.self .fwd-card { background: var(--bubble-self); border-color: transparent; color: #0b2b0f; }
+  @media (prefers-color-scheme: dark) { .row.self .fwd-card { color: #eafff0; } }
+  .fwd-card summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  .fwd-card summary::-webkit-details-marker { display: none; }
+  .fwd-title { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .fwd-summary { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+  .row.self .fwd-summary { color: rgba(11,43,15,0.65); }
+  .fwd-list {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .fwd-item { font-size: 12px; line-height: 1.5; }
+  .fwd-item b { font-weight: 600; }
+  .fwd-item img.msg-image { max-width: 120px; max-height: 120px; margin-top: 3px; }
+  /* === END QCE-CUSTOM-ADDON === */
+  footer {
+    padding: 6px 20px;
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>💬 QCE 聊天记录查看器</h1>
+    <span class="meta" id="meta">选择或拖入一个 QQ Chat Exporter 导出的 JSON 文件</span>
+    <input type="search" id="search" placeholder="搜索消息内容..." oninput="renderFiltered()">
+    <button class="file-btn" onclick="document.getElementById('file').click()">选择 JSON 文件</button>
+    <input type="file" id="file" accept="application/json,.json">
+  </header>
+  <div id="drop">
+    <div id="empty">
+      把 <b>QQChatExporter</b> 导出的 <b>.json</b> 文件拖到这个窗口，或点右上角"选择 JSON 文件"。<br><br>
+      这是一个完全离线、独立于官方项目的小工具（<code>qce-custom-addon/chat-viewer.html</code>），
+      只在你本机浏览器里解析文件，不会上传任何内容。
+    </div>
+  </div>
+  <footer>本地渲染 · 不联网 · 附加工具，不属于官方 qq-chat-exporter 源码</footer>
+
+<script>
+let currentData = null;
+
+function fmtTime(ts) {
+  const d = new Date(ts);
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function fmtDay(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日`;
+}
+function initials(name) {
+  return (name || '?').trim().charAt(0).toUpperCase();
+}
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* === QCE-CUSTOM-ADDON: 富媒体渲染（图片 / 转发合并消息 / 引用 / 表情包）===
+ * 依据 qq-chat-export-server 的 SimpleMessageParser 输出格式解析
+ * message.content.elements[]，具体字段见各 element_type 分支的注释。
+ */
+function findElement(m, type) {
+  const els = m.content?.elements;
+  return Array.isArray(els) ? els.find(e => e.type === type) : undefined;
+}
+
+function buildImageNode(data, bare) {
+  const img = document.createElement('img');
+  img.className = bare ? 'msg-image' : 'msg-image';
+  img.loading = 'lazy';
+  img.src = data.url || '';
+  img.alt = data.filename || '图片';
+  img.onclick = () => data.url && window.open(data.url, '_blank');
+  img.onerror = () => {
+    const chip = document.createElement('div');
+    chip.className = 'media-chip';
+    chip.textContent = `🖼 ${data.filename || '图片'}（无法预览，原始链接可能已失效）`;
+    img.replaceWith(chip);
+  };
+  return img;
+}
+
+function buildStickerNode(data) {
+  const img = document.createElement('img');
+  img.className = 'msg-sticker';
+  img.loading = 'lazy';
+  img.src = data.url || '';
+  img.alt = data.name || '表情';
+  img.onerror = () => {
+    const chip = document.createElement('div');
+    chip.className = 'media-chip';
+    chip.textContent = `[${data.name || '表情'}]`;
+    img.replaceWith(chip);
+  };
+  return img;
+}
+
+function buildMediaChip(icon, label) {
+  const chip = document.createElement('div');
+  chip.className = 'media-chip';
+  chip.textContent = `${icon} ${label}`;
+  return chip;
+}
+
+/** 引用/回复：QCE 已经把原消息发送者与内容解析好了，直接引用展示。 */
+function buildQuoteNode(data) {
+  const box = document.createElement('div');
+  box.className = 'quote';
+  const who = document.createElement('div');
+  who.innerHTML = `<b>${escapeHtml(data.senderName || '未知用户')}</b>`;
+  const content = document.createElement('div');
+  content.className = 'quote-content';
+  content.textContent = data.content || '原消息';
+  box.appendChild(who);
+  box.appendChild(content);
+  return box;
+}
+
+/** 转发/合并聊天记录：用原生 <details> 做展开收起，不需要额外 JS 状态。 */
+function buildForwardCard(data) {
+  const details = document.createElement('details');
+  details.className = 'fwd-card';
+
+  const summary = document.createElement('summary');
+  const title = document.createElement('div');
+  title.className = 'fwd-title';
+  title.textContent = `📑 ${data.title || '聊天记录'}`;
+  const sub = document.createElement('div');
+  sub.className = 'fwd-summary';
+  sub.textContent = `${data.summary || '查看转发消息'} · 点击展开/收起`;
+  summary.appendChild(title);
+  summary.appendChild(sub);
+  details.appendChild(summary);
+
+  const list = document.createElement('div');
+  list.className = 'fwd-list';
+  const inner = Array.isArray(data.messages) ? data.messages : [];
+  if (!inner.length) {
+    const empty = document.createElement('div');
+    empty.className = 'fwd-item';
+    empty.style.color = 'var(--muted)';
+    empty.textContent = '（未获取到合并转发的详细内容，只保留了摘要）';
+    list.appendChild(empty);
+  }
+  for (const im of inner) {
+    const item = document.createElement('div');
+    item.className = 'fwd-item';
+    const name = document.createElement('b');
+    name.textContent = (im.sender?.name || im.sender?.uin || '未知') + '：';
+    item.appendChild(name);
+    const textSpan = document.createElement('span');
+    textSpan.textContent = im.content?.text || '';
+    item.appendChild(textSpan);
+    // 内层如果只是一张图片，附带小缩略图（更深层的嵌套转发就不再展开，只显示摘要文字，避免无限递归）。
+    const innerImage = findElement(im, 'image');
+    if (innerImage && Array.isArray(im.content?.elements) && im.content.elements.length === 1) {
+      item.appendChild(document.createElement('br'));
+      item.appendChild(buildImageNode(innerImage.data, true));
+    }
+    list.appendChild(item);
+  }
+  details.appendChild(list);
+  return details;
+}
+
+/**
+ * 计算一条消息的主体展示内容（不含头像/发送者名/时间）。
+ * 返回一个 DOM 节点数组，按顺序 append 进气泡列即可。
+ */
+function buildMessageBody(m) {
+  const nodes = [];
+  const els = Array.isArray(m.content?.elements) ? m.content.elements : null;
+
+  if (!els || !els.length) {
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = m.content?.text || `[${m.type || '未知类型'}消息]`;
+    nodes.push(bubble);
+    return nodes;
+  }
+
+  const replyEl = els.find(e => e.type === 'reply');
+  const forwardEl = els.find(e => e.type === 'forward');
+  const others = els.filter(e => e.type !== 'reply' && e.type !== 'forward');
+
+  if (replyEl) nodes.push(buildQuoteNode(replyEl.data));
+  if (forwardEl) {
+    nodes.push(buildForwardCard(forwardEl.data));
+    return nodes;
+  }
+
+  if (others.length === 1 && others[0].type === 'image') {
+    nodes.push(buildImageNode(others[0].data, true));
+    return nodes;
+  }
+  if (others.length === 1 && others[0].type === 'market_face') {
+    nodes.push(buildStickerNode(others[0].data));
+    return nodes;
+  }
+  if (others.length === 1 && others[0].type === 'video') {
+    const d = others[0].data;
+    nodes.push(buildMediaChip('🎬', `${d.filename || '视频'}${d.duration ? ` · ${d.duration}s` : ''}`));
+    return nodes;
+  }
+  if (others.length === 1 && others[0].type === 'audio') {
+    const d = others[0].data;
+    nodes.push(buildMediaChip('🎤', `语音${d.duration ? ` · ${d.duration}s` : ''}`));
+    return nodes;
+  }
+  if (others.length === 1 && others[0].type === 'file') {
+    const d = others[0].data;
+    nodes.push(buildMediaChip('📎', d.filename || '文件'));
+    return nodes;
+  }
+
+  // 其余情况（纯文本 / @某人 / 混合内容）：用 QCE 已经拼好的可读文本。
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = m.content?.text || `[${m.type || '未知类型'}消息]`;
+  nodes.push(bubble);
+  return nodes;
+}
+/* === END QCE-CUSTOM-ADDON === */
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (!Array.isArray(data.messages)) throw new Error('文件里没有找到 messages 数组，确认这是 QCE 导出的 JSON 吗？');
+      currentData = data;
+      document.getElementById('meta').textContent =
+        `${data.chatInfo?.name || '未知会话'} · 共 ${data.messages.length} 条消息`;
+      renderFiltered();
+    } catch (e) {
+      document.getElementById('meta').textContent = '解析失败：' + e.message;
+    }
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
+function renderFiltered() {
+  if (!currentData) return;
+  const kw = document.getElementById('search').value.trim().toLowerCase();
+  const msgs = kw
+    ? currentData.messages.filter(m => (m.content?.text || '').toLowerCase().includes(kw))
+    : currentData.messages;
+  render(currentData, msgs);
+}
+
+function render(data, msgs) {
+  const container = document.getElementById('drop');
+  container.innerHTML = '';
+  if (!msgs.length) {
+    container.innerHTML = '<div id="empty">没有匹配的消息</div>';
+    return;
+  }
+  const selfUid = data.chatInfo?.selfUid;
+  const peerAvatar = data.chatInfo?.avatar;
+  const isGroup = data.chatInfo?.type === 'group';
+  let lastDay = '';
+
+  for (const m of msgs) {
+    const day = fmtDay(m.timestamp);
+    if (day !== lastDay) {
+      const sep = document.createElement('div');
+      sep.className = 'day-sep';
+      sep.textContent = day;
+      container.appendChild(sep);
+      lastDay = day;
+    }
+
+    if (m.type === 'system') {
+      const sys = document.createElement('div');
+      sys.className = 'bubble system';
+      sys.textContent = m.content?.text || '[系统消息]';
+      container.appendChild(sys);
+      continue;
+    }
+
+    const isSelf = m.sender?.uid === selfUid;
+    const row = document.createElement('div');
+    row.className = 'row' + (isSelf ? ' self' : '');
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    if (!isSelf && peerAvatar && !isGroup) {
+      const img = document.createElement('img');
+      img.src = peerAvatar;
+      img.onerror = () => { img.remove(); avatar.textContent = initials(m.sender?.name); };
+      avatar.appendChild(img);
+    } else {
+      avatar.textContent = initials(m.sender?.name);
+    }
+
+    const col = document.createElement('div');
+    col.className = 'bubble-col';
+
+    if (isGroup && !isSelf) {
+      const name = document.createElement('div');
+      name.className = 'sender-name';
+      name.textContent = m.sender?.name || m.sender?.uin || '';
+      col.appendChild(name);
+    }
+
+    for (const node of buildMessageBody(m)) col.appendChild(node);
+
+    const time = document.createElement('div');
+    time.className = 'time';
+    time.textContent = fmtTime(m.timestamp);
+    col.appendChild(time);
+
+    row.appendChild(avatar);
+    row.appendChild(col);
+    container.appendChild(row);
+  }
+  container.scrollTop = container.scrollHeight;
+}
+
+document.getElementById('file').addEventListener('change', e => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+
+const dropZone = document.getElementById('drop');
+['dragenter', 'dragover'].forEach(evt =>
+  document.body.addEventListener(evt, e => { e.preventDefault(); })
+);
+document.body.addEventListener('drop', e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file) handleFile(file);
+});
+</script>
+</body>
+</html>
