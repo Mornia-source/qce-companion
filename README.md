@@ -1,12 +1,23 @@
 # qce-companion
 
-[qq-chat-exporter](https://github.com/shuakami/qq-chat-exporter)（以下简称 QCE）的一个**非官方、社区自建**增强工具包。
+[![原项目](https://img.shields.io/badge/原项目-shuakami%2Fqq--chat--exporter-317cfe?style=flat-square&logo=github)](https://github.com/shuakami/qq-chat-exporter)
 
-不是 fork，不改动 QCE 的核心导出逻辑，只是在它之上补几个日常用得到的小功能，
-并且尽量做成"随时能拆下来"的样子——哪怕以后不维护了，或者官方项目大改版，
-这里的东西也不会把你的正式安装搞坏。
+**原项目地址：<https://github.com/shuakami/qq-chat-exporter>**
 
-> 这个仓库和 QCE 官方项目没有从属关系，用之前自己判断是否适合你的使用场景。
+这是 [qq-chat-exporter](https://github.com/shuakami/qq-chat-exporter)（作者
+[shuakami](https://github.com/shuakami)，以下简称 **QCE**）的一个**非官方、
+社区自建**增强工具包/插件。QCE 本体是一个基于 [NapCatQQ](https://github.com/NapNeko/NapCatQQ)
+（NTQQ 协议端框架）的 QQ 聊天记录导出工具，可以把好友/群聊天记录导出成
+HTML、JSON、TXT、Excel 等格式，并支持定时导出、批量任务等功能。
+
+本仓库**不是 fork**，不改动 QCE 的核心导出逻辑，只是在它之上补几个日常用得到
+的小功能，并且尽量做成"随时能拆下来"的样子——哪怕以后不维护了，或者官方
+项目大改版，这里的东西也不会把你的正式安装搞坏。
+
+> 这个仓库和 QCE 官方项目没有从属关系（非官方衍生工具），使用前请先了解并
+> 支持原项目：<https://github.com/shuakami/qq-chat-exporter>。如果你是从
+> 原项目搜过来的，这里补充的是"导出记录增量更新"和"离线聊天气泡查看器"
+> 这两块原项目暂时没有的能力。
 
 ## 这里面有什么
 
@@ -110,6 +121,17 @@ qce-companion/
     ├── 一键启动.bat
     └── 重新构建前端.bat
 ```
+
+## 相关项目
+
+- **原项目 / QCE 本体**：[shuakami/qq-chat-exporter](https://github.com/shuakami/qq-chat-exporter) —
+  QQ 聊天记录导出工具，支持 HTML / JSON / TXT / Excel 导出、定时导出、批量任务、
+  资源（图片/视频/语音/表情）下载。**本仓库依赖它才能工作，请先去这个仓库了解
+  安装和基础使用方法。**
+- **底层框架**：[NapNeko/NapCatQQ](https://github.com/NapNeko/NapCatQQ) —
+  QCE 依赖的 NTQQ 协议端框架（OneBot 11 实现）。
+- **关键词**：QQ 聊天记录导出、QQ Chat Exporter、QCE、NapCat、NapCatQQ、OneBot、
+  聊天记录查看器、QQ 转发消息渲染、QQ 引用消息渲染、增量导出、增量更新。
 
 ## 许可证
 
