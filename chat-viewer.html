@@ -135,9 +135,9 @@
     white-space: pre-wrap;
     overflow-wrap: break-word;
     word-break: normal;
-    /* QCE-CUSTOM-ADDON: 修复 flex 列下气泡最后一个字被单独挤到下一行的问题——
-       让浏览器按内容算宽度（max-content），而不是用 flex 的收缩启发式（会有
-       亚像素误差，导致最后一个字符量出去换行）。 */
+    /* QCE-CUSTOM-ADDON: 这里的 width/max-width 只是没有 JS 时的兜底默认值。
+       真正修复"最后一个字/表情被单独挤到下一行"的逻辑在 JS 里的
+       sizeToContentSafely()，会在渲染后用更准确的方式重新量宽度并覆盖这里。 */
     width: max-content;
     max-width: 100%;
   }
@@ -298,6 +298,46 @@ function escapeHtml(s) {
 function findElement(m, type) {
   const els = m.content?.elements;
   return Array.isArray(els) ? els.find(e => e.type === type) : undefined;
+}
+
+/**
+ * 修复气泡"最后一个字/表情被单独挤到下一行"的问题。
+ *
+ * 根因：Chromium 对 `white-space: pre-wrap` 文本在 flex 列（`align-items:
+ * flex-end/flex-start`）里计算的 max-content 宽度，有时会比实际单行渲染所需
+ * 的宽度窄几个像素（实测能差 3~4px），导致明明能放下的最后一个字符被判定
+ * "放不下"而单独换到下一行。`width: max-content` 这个 CSS 属性本身用的就是
+ * 同一套（有 bug 的）计算逻辑，所以没法从根上解决。
+ *
+ * 这里换一种测量方式：先把元素临时设成 `white-space: nowrap`，此时没有
+ * "要不要换行"的判断，测出来的宽度是准确的单行真实宽度，再据此手动设置一个
+ * 明确的像素宽度（留一点余量），从根上避开这个计算 bug。
+ */
+function sizeToContentSafely(el) {
+  if (!el || !el.classList) return;
+  const isBubble = el.classList.contains('bubble') && !el.classList.contains('system');
+  const isChip = el.classList.contains('quote') || el.classList.contains('media-chip');
+  if (!isBubble && !isChip) return;
+
+  const CAP = 620; // 会话列表整体 max-width 720px 减去头像/间距后的安全上限
+  const BUFFER = 3; // 抵消测量误差的安全余量（像素）
+
+  const prevWhiteSpace = el.style.whiteSpace;
+  el.style.whiteSpace = 'nowrap';
+  const naturalWidth = Math.ceil(el.getBoundingClientRect().width) + BUFFER;
+  el.style.whiteSpace = prevWhiteSpace;
+
+  // 关键一步：清掉 CSS 里的 `max-width: 100%`。它是相对父级 .bubble-col 算的，
+  // 而 .bubble-col 自己的宽度又是在"孙子元素还没被我们纠正宽度之前"的那一轮
+  // 布局里算出来的（同样偏窄），会把我们刚设的宽度重新夹紧到那个偏窄的值，
+  // 前功尽弃。这里改用 JS 里的 CAP 常量兜底，不再依赖百分比。
+  el.style.maxWidth = 'none';
+  if (naturalWidth <= CAP) {
+    el.style.width = naturalWidth + 'px';
+  } else {
+    el.style.width = CAP + 'px';
+    el.style.whiteSpace = 'pre-wrap';
+  }
 }
 
 /**
@@ -553,7 +593,8 @@ function render(data, msgs) {
       col.appendChild(name);
     }
 
-    for (const node of buildMessageBody(m)) col.appendChild(node);
+    const bodyNodes = buildMessageBody(m);
+    for (const node of bodyNodes) col.appendChild(node);
 
     const time = document.createElement('div');
     time.className = 'time';
@@ -563,6 +604,10 @@ function render(data, msgs) {
     row.appendChild(avatar);
     row.appendChild(col);
     container.appendChild(row);
+
+    // 必须等 row 真正挂到 container（进了渲染树、有了实际布局）之后再测量，
+    // 不然量出来的宽度全是 0。
+    for (const node of bodyNodes) sizeToContentSafely(node);
   }
   container.scrollTop = container.scrollHeight;
 }
