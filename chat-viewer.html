@@ -133,7 +133,13 @@
     font-size: 13.5px;
     line-height: 1.55;
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: break-word;
+    word-break: normal;
+    /* QCE-CUSTOM-ADDON: 修复 flex 列下气泡最后一个字被单独挤到下一行的问题——
+       让浏览器按内容算宽度（max-content），而不是用 flex 的收缩启发式（会有
+       亚像素误差，导致最后一个字符量出去换行）。 */
+    width: max-content;
+    max-width: 100%;
   }
   .row.self .bubble {
     background: var(--bubble-self);
@@ -186,6 +192,8 @@
     border-radius: 10px;
     padding: 8px 12px;
     font-size: 12.5px;
+    width: max-content;
+    max-width: 100%;
   }
   .row.self .media-chip { background: var(--bubble-self); border-color: transparent; color: #0b2b0f; }
   @media (prefers-color-scheme: dark) { .row.self .media-chip { color: #eafff0; } }
@@ -199,16 +207,18 @@
     padding: 5px 10px;
     font-size: 12px;
     color: var(--muted);
+    width: max-content;
     max-width: 100%;
   }
   .quote b { color: var(--text); font-weight: 600; }
-  .quote .quote-content { word-break: break-word; white-space: pre-wrap; }
+  .quote .quote-content { overflow-wrap: break-word; word-break: normal; white-space: pre-wrap; }
   .fwd-card {
     background: var(--bubble-other);
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 10px 12px;
     font-size: 13px;
+    width: max-content;
     max-width: 320px;
   }
   .row.self .fwd-card { background: var(--bubble-self); border-color: transparent; color: #0b2b0f; }
@@ -290,13 +300,27 @@ function findElement(m, type) {
   return Array.isArray(els) ? els.find(e => e.type === type) : undefined;
 }
 
+/**
+ * QCE 导出的图片/表情 url 有时是 NTQQ 内部的相对路径（例如
+ * `/download?appid=1406&fileid=...`），而不是完整链接——这类链接实际是相对于
+ * `https://multimedia.nt.qq.com.cn` 这个域名的，直接当 <img src> 用会 404。
+ * 这里补全域名；已经是完整 http(s) 链接的原样返回。
+ */
+function resolveMediaUrl(url) {
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith('/')) return 'https://multimedia.nt.qq.com.cn' + url;
+  return url;
+}
+
 function buildImageNode(data, bare) {
   const img = document.createElement('img');
   img.className = bare ? 'msg-image' : 'msg-image';
   img.loading = 'lazy';
-  img.src = data.url || '';
+  const resolved = resolveMediaUrl(data.url);
+  img.src = resolved;
   img.alt = data.filename || '图片';
-  img.onclick = () => data.url && window.open(data.url, '_blank');
+  img.onclick = () => resolved && window.open(resolved, '_blank');
   img.onerror = () => {
     const chip = document.createElement('div');
     chip.className = 'media-chip';
@@ -310,7 +334,7 @@ function buildStickerNode(data) {
   const img = document.createElement('img');
   img.className = 'msg-sticker';
   img.loading = 'lazy';
-  img.src = data.url || '';
+  img.src = resolveMediaUrl(data.url);
   img.alt = data.name || '表情';
   img.onerror = () => {
     const chip = document.createElement('div');
