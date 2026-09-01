@@ -1,8 +1,8 @@
 diff --git a/qce-v4-tool/app/page.tsx b/qce-v4-tool/app/page.tsx
-index ebaaff4..7346e75 100644
+index 5fd6a87..3bbe0f0 100644
 --- a/qce-v4-tool/app/page.tsx
 +++ b/qce-v4-tool/app/page.tsx
-@@ -497,6 +497,32 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -539,6 +539,32 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
      }
    }, [addNotification])
  
@@ -35,7 +35,7 @@ index ebaaff4..7346e75 100644
    const handleExportGroupAvatars = useCallback(async (groupCode: string, groupName: string) => {
      const loadingId = addNotification('info', '正在导出', `正在导出群"${groupName}"的成员头像...`)
  
-@@ -1895,6 +1921,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -2100,6 +2126,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                        onExportGroupAvatars={handleExportGroupAvatars}
                        onOpenEssenceModal={handleOpenEssenceModal}
                        onOpenGroupFilesModal={handleOpenGroupFilesModal}
@@ -44,10 +44,10 @@ index ebaaff4..7346e75 100644
                    </>
                  )}
 diff --git a/qce-v4-tool/components/ui/session-list.tsx b/qce-v4-tool/components/ui/session-list.tsx
-index 84511f3..89c8e82 100644
+index 679f3ff..8c439f6 100644
 --- a/qce-v4-tool/components/ui/session-list.tsx
 +++ b/qce-v4-tool/components/ui/session-list.tsx
-@@ -73,6 +73,17 @@ export interface SessionListProps {
+@@ -131,6 +131,17 @@ export interface SessionListProps {
    onExportGroupAvatars?: (groupCode: string, groupName: string) => void
    onOpenEssenceModal?: (groupCode: string, groupName: string) => void
    onOpenGroupFilesModal?: (groupCode: string, groupName: string) => void
@@ -65,7 +65,7 @@ index 84511f3..89c8e82 100644
  }
  
  
-@@ -97,6 +108,7 @@ function SessionListComponent({
+@@ -155,6 +166,7 @@ function SessionListComponent({
    onExportGroupAvatars,
    onOpenEssenceModal,
    onOpenGroupFilesModal,
@@ -73,60 +73,17 @@ index 84511f3..89c8e82 100644
  }: SessionListProps) {
    const {
      search,
-@@ -351,12 +363,24 @@ function SessionListComponent({
+@@ -349,6 +361,9 @@ function SessionListComponent({
              >
                预览
              </button>
-+            {/* === QCE-CUSTOM-ADDON: 已有历史导出时主按钮变"更新"，完整导出移入下拉菜单。见 /qce-custom-addon/README.md === */}
++            {/* === QCE-CUSTOM-ADDON: 好友已有历史导出时主按钮变"更新"（只拉新消息），
++                 完整导出移入下拉菜单。群组不做这个改造——官方 /plans 导出任务模块
++                 已经提供了更完整的群组增量方案。见 /qce-custom-addon/README.md === */}
              {isGroup && group ? (
                <div className="flex items-center bg-white dark:bg-neutral-900 border border-black/5 dark:border-white/10 shadow-[0_1px_2px_rgba(0,0,0,0.04)] rounded-full overflow-hidden hover:border-black/10 transition-all">
                  <button
-                   className="inline-flex items-center justify-center h-7 pl-3 pr-2 text-[12px] font-medium text-neutral-700 dark:text-neutral-200 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-50 dark:hover:bg-white/5 transition-colors border-r border-neutral-200/80 dark:border-white/10"
-+                  title={item.lastSuccessfulExportAt ? "只拉取自上次导出以来的新消息" : undefined}
-                   onClick={(e: React.MouseEvent) => {
-                     e.stopPropagation()
-+                    if (item.lastSuccessfulExportAt) {
-+                      onIncrementalUpdate?.(
-+                        item.type,
-+                        item.id,
-+                        item.name,
-+                        { chatType: 2, peerUid: item.id },
-+                        item.lastSuccessfulExportAt,
-+                      )
-+                      return
-+                    }
-                     onOpenTaskWizard?.({
-                       chatType: 2,
-                       peerUid: item.id,
-@@ -365,7 +389,7 @@ function SessionListComponent({
-                     })
-                   }}
-                 >
--                  导出
-+                  {item.lastSuccessfulExportAt ? "更新" : "导出"}
-                 </button>
-                 <DropdownMenu>
-                   <DropdownMenuTrigger asChild>
-@@ -377,6 +401,18 @@ function SessionListComponent({
-                     </button>
-                   </DropdownMenuTrigger>
-                   <DropdownMenuContent align="end" className="w-40">
-+                    {!!item.lastSuccessfulExportAt && (
-+                      <DropdownMenuItem
-+                        onClick={() => onOpenTaskWizard?.({
-+                          chatType: 2,
-+                          peerUid: item.id,
-+                          peerUin: item.id,
-+                          sessionName: item.name,
-+                        })}
-+                      >
-+                        重新导出全部
-+                      </DropdownMenuItem>
-+                    )}
-                     <DropdownMenuItem
-                       disabled={avatarExportLoading === group.groupCode}
-                       onClick={() => onExportGroupAvatars?.(group.groupCode, group.groupName)}
-@@ -393,28 +429,69 @@ function SessionListComponent({
+@@ -391,28 +406,69 @@ function SessionListComponent({
                  </DropdownMenu>
                </div>
              ) : (
