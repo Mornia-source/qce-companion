@@ -1,0 +1,44 @@
+diff --git a/qq-chat-export-server/src/api/routes/messages.rs b/qq-chat-export-server/src/api/routes/messages.rs
+index c820abe..02c90ea 100644
+--- a/qq-chat-export-server/src/api/routes/messages.rs
++++ b/qq-chat-export-server/src/api/routes/messages.rs
+@@ -886,16 +886,29 @@ pub async fn export_messages(
+ 
+     let task_id = generate_task_id("export");
+     let prefix = chat_type_prefix(Some(req.chat_type));
+-    let base_file_name = build_export_file_name(
+-        prefix,
+-        &req.peer_identity,
+-        &req.session_name,
+-        &req.date_str,
+-        &req.time_str,
+-        file_ext,
+-        req.use_name_in_file_name,
+-        req.use_friendly_file_name,
+-    );
++    // QCE-CUSTOM-ADDON: 允许调用方指定文件名主干（不含扩展名）。
++    // 增量导出用它产出「会话名_导出日期」这种短名字，便于和完整导出区分。
++    // 不传时完全走官方的命名逻辑，向后兼容。
++    // 主干一律过 sanitize_chat_name，杜绝路径穿越和非法文件名字符。
++    let custom_stem = req
++        .options
++        .get("customFileNameStem")
++        .and_then(Value::as_str)
++        .map(|raw| sanitize_chat_name(raw, 80))
++        .filter(|stem| !stem.is_empty());
++    let base_file_name = match custom_stem {
++        Some(stem) => format!("{stem}.{file_ext}"),
++        None => build_export_file_name(
++            prefix,
++            &req.peer_identity,
++            &req.session_name,
++            &req.date_str,
++            &req.time_str,
++            file_ext,
++            req.use_name_in_file_name,
++            req.use_friendly_file_name,
++        ),
++    };
+     let file_name = reserve_export_file_name(&req.output_dir, &base_file_name);
+     let file_path = req.output_dir.join(&file_name);
+     let download_url = generate_download_url(

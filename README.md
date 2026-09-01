@@ -23,9 +23,15 @@ HTML、JSON、TXT、Excel 等格式，并支持定时导出、批量任务等功
 
 | 内容 | 说明 | 是否修改了 QCE 源码 |
 | --- | --- | --- |
-| `patches/incremental-update-button.patch` | 给 QCE 的 Web UI（`qce-v4-tool`）打的一个小补丁：已经导出过的**好友**，列表里的"导出"按钮变成"更新"，点一下只拉取上次导出之后的新消息。（群组不改造，官方 v6.2+ 的"导出任务"模块已提供更完整的群组增量方案。） | 是，两个前端文件的小改动，见下文 |
+| `patches/incremental-update-button.patch` | 给 QCE 的 Web UI（`qce-v4-tool`）打的补丁：已经导出过的**好友**，列表里的"导出"按钮变成"更新"，点一下只拉取上次导出之后的新消息。**续传起点取自上一次导出文件里最后一条消息的时间**（读官方 `/api/exports/files/:name/info` 的 `timeRange`），而不是上次导出任务的完成时间——后者在上次导出设过截止日期时会漏掉中间那段。（群组不改造，官方 v6.2+ 的"导出任务"模块已提供更完整的群组增量方案。） | 是，4 个前端文件，见下文 |
+| `patches/custom-export-filename.patch` | 给 Rust 服务端加一个可选的 `options.customFileNameStem`，允许调用方指定导出文件名主干。增量导出用它产出 `会话名_20260901.json` 这种短名字，和完整导出的长文件名区分开。不传该字段时完全走官方原命名逻辑。 | 是，`qq-chat-export-server` 一处约 15 行 |
 | `scripts/一键启动.bat` | 假设你本机是 `NapCatQQ` 源码 + `qq-chat-exporter` 源码 + 本仓库三个目录平级放置，双击就能关闭现有 QQ、以注入模式启动 NapCat（自动带上 QCE 插件）。 | 否 |
 | `scripts/重新构建前端.bat` | 打完补丁或者 `git pull` 官方更新之后，重新构建 `qce-v4-tool` 前端并部署到 NapCat 插件目录。 | 否 |
+
+> ⚠️ 打了 `custom-export-filename.patch` 之后，除了重新构建前端，**还需要重新编译
+> Rust 服务端**（`cd qq-chat-export-server && cargo build --release`，约 2~7 分钟），
+> 再把产出的 `qce-server.exe` 覆盖到插件的 `runtime/` 目录。Windows 上如果项目路径
+> 含中文，`link.exe` 可能报错，把 crate 复制到纯英文路径下编译即可。
 
 > **曾经有个 `chat-viewer.html`（离线聊天气泡查看器），现已移除。**
 > 官方导出时直接选 HTML 格式就能得到聊天气泡界面，并且勾上「生成自包含 HTML」

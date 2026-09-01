@@ -1,12 +1,73 @@
 diff --git a/qce-v4-tool/app/page.tsx b/qce-v4-tool/app/page.tsx
-index 5fd6a87..3bbe0f0 100644
+index 5fd6a87..1d76aa7 100644
 --- a/qce-v4-tool/app/page.tsx
 +++ b/qce-v4-tool/app/page.tsx
-@@ -539,6 +539,32 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -539,6 +539,113 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
      }
    }, [addNotification])
  
 +  // 增量更新：只拉取该会话自上次成功导出以来的新消息，避免每次都重新导出全部记录。
++  /**
++   * QCE-CUSTOM-ADDON：找出该会话「已导出到哪条消息为止」。
++   *
++   * 为什么不直接用上次导出任务的完成时间：那只说明"任务什么时候跑完的"，
++   * 如果上次导出时设了截止日期（比如只导到 7/1，但任务 7/20 才跑完），
++   * 按完成时间续传会把 7/1~7/20 这段永久跳过。改成读导出文件里真实的
++   * 最后一条消息时间，才是真正的"上次停在哪儿"。
++   *
++   * 用官方的 /info 接口拿 statistics.timeRange，不必下载整个 JSON。
++   * 同一会话可能有多份导出（不同时间段），取其中最晚的一条消息时间。
++   */
++  const resolveResumePoint = useCallback(async (
++    type: 'group' | 'friend',
++    peerUin: string | undefined,
++    fallbackMs: number,
++  ): Promise<{ ms: number; fromFile?: string }> => {
++    if (!peerUin) return { ms: fallbackMs }
++    try {
++      const listRes = await fetch('/api/exports/files')
++      if (!listRes.ok) return { ms: fallbackMs }
++      const listJson = await listRes.json()
++      const files: Array<{
++        fileName: string
++        chatType?: string
++        chatId?: string
++        modifyTime?: string
++      }> = listJson?.data?.files || []
++
++      const mine = files
++        .filter((f) =>
++          f.chatType === type &&
++          String(f.chatId) === String(peerUin) &&
++          f.fileName.toLowerCase().endsWith('.json'))
++        .sort((a, b) => Date.parse(b.modifyTime || '') - Date.parse(a.modifyTime || ''))
++        // 只看最近几份，避免会话导出过很多次时打一堆请求
++        .slice(0, 8)
++
++      let best = { ms: fallbackMs, fromFile: undefined as string | undefined }
++      for (const f of mine) {
++        try {
++          const infoRes = await fetch(`/api/exports/files/${encodeURIComponent(f.fileName)}/info`)
++          if (!infoRes.ok) continue
++          const infoJson = await infoRes.json()
++          // 后端把范围拼成了 "<start> ~ <end>"
++          const timeRange: string | undefined = infoJson?.data?.timeRange
++          const endPart = timeRange?.split('~')[1]?.trim()
++          const endMs = endPart ? Date.parse(endPart) : Number.NaN
++          if (Number.isFinite(endMs) && endMs > best.ms) {
++            best = { ms: endMs, fromFile: f.fileName }
++          }
++        } catch {
++          // 单个文件读失败就跳过，不影响其它文件
++        }
++      }
++      return best
++    } catch {
++      // 整体失败时退回任务完成时间，至少不阻断导出
++      return { ms: fallbackMs }
++    }
++  }, [])
++
 +  const handleIncrementalUpdate = useCallback(async (
 +    type: 'group' | 'friend',
 +    id: string,
@@ -15,27 +76,47 @@ index 5fd6a87..3bbe0f0 100644
 +    lastExportAt: number,
 +  ) => {
 +    const peerUin = type === 'group' ? id : friends.find((f) => f.uid === id)?.uin
++
++    const resume = await resolveResumePoint(type, peerUin, lastExportAt)
++    addNotification(
++      'info',
++      '正在续传',
++      resume.fromFile
++        ? `从上次导出的最后一条消息接着导（依据：${resume.fromFile}）`
++        : '没找到可用的历史导出文件，改用上次导出任务的时间作为起点',
++    )
++
++    // QCE-CUSTOM-ADDON：增量导出的产物只是一个时间片段、不是完整记录，
++    // 用「会话名_导出日期」命名，跟完整导出的长文件名区分开。
++    // 同一天多次更新时，后端 reserve_export_file_name 会自动加 _1 / _2。
++    const now = new Date()
++    const pad = (n: number) => String(n).padStart(2, '0')
++    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
++
 +    const success = await createTask({
 +      chatType: peer.chatType,
 +      peerUid: peer.peerUid,
 +      peerUin,
 +      sessionName: name,
 +      format: "JSON",
-+      startTime: new Date(lastExportAt).toISOString(),
-+      endTime: new Date().toISOString(),
++      // 用最后一条消息的时间本身、而不是 +1 秒：宁可边界上重复一条，
++      // 也不要因为同一秒内有多条消息而漏掉。
++      startTime: new Date(resume.ms).toISOString(),
++      endTime: now.toISOString(),
 +      includeRecalled: false,
 +      includeSystemMessages: true,
 +      filterPureImageMessages: false,
++      customFileNameStem: `${name}_${stamp}`,
 +    })
 +    if (success) {
 +      tasksLoadedRef.current = false
 +    }
-+  }, [createTask, friends])
++  }, [createTask, friends, resolveResumePoint, addNotification])
 +
    const handleExportGroupAvatars = useCallback(async (groupCode: string, groupName: string) => {
      const loadingId = addNotification('info', '正在导出', `正在导出群"${groupName}"的成员头像...`)
  
-@@ -2100,6 +2126,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -2100,6 +2207,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                        onExportGroupAvatars={handleExportGroupAvatars}
                        onOpenEssenceModal={handleOpenEssenceModal}
                        onOpenGroupFilesModal={handleOpenGroupFilesModal}
@@ -170,3 +251,43 @@ index 679f3ff..8c439f6 100644
  
    return (
      <div className="space-y-0">
+diff --git a/qce-v4-tool/lib/export-request.ts b/qce-v4-tool/lib/export-request.ts
+index 6497037..aa4d29a 100644
+--- a/qce-v4-tool/lib/export-request.ts
++++ b/qce-v4-tool/lib/export-request.ts
+@@ -56,6 +56,10 @@ export function buildExportRequest(form: CreateTaskForm): BuiltExportRequest {
+       ...(Array.isArray(form.skipDownloadResourceTypes) && form.skipDownloadResourceTypes.length > 0 && {
+         skipDownloadResourceTypes: form.skipDownloadResourceTypes,
+       }),
++      // QCE-CUSTOM-ADDON：自定义文件名主干（增量导出用）
++      ...(form.customFileNameStem?.trim() && {
++        customFileNameStem: form.customFileNameStem.trim(),
++      }),
+     },
+   }
+ 
+diff --git a/qce-v4-tool/types/api.ts b/qce-v4-tool/types/api.ts
+index 7f16047..1efeadd 100644
+--- a/qce-v4-tool/types/api.ts
++++ b/qce-v4-tool/types/api.ts
+@@ -243,6 +243,11 @@ export interface CreateTaskForm {
+    * 'image' | 'video' | 'audio' | 'file'
+    */
+   skipDownloadResourceTypes?: Array<'image' | 'video' | 'audio' | 'file'>
++  /**
++   * QCE-CUSTOM-ADDON：自定义导出文件名主干（不含扩展名）。
++   * 增量导出用它产出「会话名_导出日期」这种短名字。留空则用官方默认命名。
++   */
++  customFileNameStem?: string
+ }
+ 
+ export interface CreateTaskRequest {
+@@ -284,6 +289,8 @@ export interface CreateTaskRequest {
+     debugExport?: boolean
+     /** 仅保留元数据、跳过下载的资源类型（Issue #341） */
+     skipDownloadResourceTypes?: Array<'image' | 'video' | 'audio' | 'file'>
++    /** QCE-CUSTOM-ADDON：自定义导出文件名主干（不含扩展名） */
++    customFileNameStem?: string
+   }
+ }
+ 
