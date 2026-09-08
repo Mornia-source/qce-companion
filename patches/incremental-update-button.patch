@@ -1,8 +1,83 @@
 diff --git a/qce-v4-tool/app/page.tsx b/qce-v4-tool/app/page.tsx
-index 5fd6a87..59adff8 100644
+index 5fd6a87..15476c9 100644
 --- a/qce-v4-tool/app/page.tsx
 +++ b/qce-v4-tool/app/page.tsx
-@@ -539,6 +539,114 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -90,6 +90,8 @@ import { BUILD_VERSION, isNewerVersion, isMajorUpdate, extractReleaseImage } fro
+ import { UpdatePopover, type UpdateBannerInfo } from "@/components/ui/update-banner"
+ import { SecurityExposureBanner } from "@/components/ui/security-exposure-banner"
+ import AuthManager from "@/lib/auth"
++// QCE-CUSTOM-ADDON：历史补同步检测
++import { planIncrementalSync, mergeAdjacentDays, dayRange } from "@/lib/incremental-sync"
+ import { classifySpecialChatType, specialKindLabel } from "@/lib/special-contacts"
+ import {
+   scheduledExportConfigToForm,
+@@ -387,32 +389,47 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+     title: string,
+     description: string,
+     onConfirmDelete: () => Promise<void>,
++    /**
++     * QCE-CUSTOM-ADDON：可选的第二个动作。用于「删任务记录」和
++     * 「连同本机导出文件一起删」两种选择——官方删除任务时只清记录、
++     * 不动磁盘上的文件，容易让人以为清理干净了，实际文件还堆着。
++     */
++    extraAction?: { label: string; run: () => Promise<void> },
+   ) => {
+     let toastId = ""
+ 
++    const runWithFeedback = (fn: () => Promise<void>) => {
++      void toast.promise(
++        fn,
++        {
++          loading: "正在删除...",
++          success: "已删除",
++          error: (err) => err instanceof Error ? err.message : "删除失败",
++        },
++        {
++          id: toastId,
++          description: undefined,
++          actions: undefined,
++          duration: 3200,
++        }
++      )
++    }
++
+     toastId = toast.error(title, {
+       description,
+       duration: Number.POSITIVE_INFINITY,
+       actions: [
++        ...(extraAction
++          ? [{
++              label: extraAction.label,
++              onClick: () => runWithFeedback(extraAction.run),
++              variant: "destructive" as const,
++            }]
++          : []),
+         {
+-          label: "确认删除",
+-          onClick: () => {
+-            void toast.promise(
+-              onConfirmDelete,
+-              {
+-                loading: "正在删除...",
+-                success: "已删除",
+-                error: (err) => err instanceof Error ? err.message : "删除失败",
+-              },
+-              {
+-                id: toastId,
+-                description: undefined,
+-                actions: undefined,
+-                duration: 3200,
+-              }
+-            )
+-          },
+-          variant: "destructive",
++          label: extraAction ? "仅删记录" : "确认删除",
++          onClick: () => runWithFeedback(onConfirmDelete),
++          variant: "destructive" as const,
+         },
+       ],
+     })
+@@ -539,6 +556,240 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
      }
    }, [addNotification])
  
@@ -68,6 +143,81 @@ index 5fd6a87..59adff8 100644
 +    }
 +  }, [])
 +
++  /**
++   * QCE-CUSTOM-ADDON：检测"历史补同步"。
++   *
++   * QQ 会在你打开会话时把以前没同步的旧消息补下来，这些消息带的是**原始发送
++   * 时间**，会插进历史里。只按"上次导出的最后一条往后拉"永远抓不到它们。
++   * 这里把已导出 JSON 里每天的条数和本地实际条数做对比，找出变多了的日期。
++   *
++   * 需要 JSON 格式的导出做基线（HTML 没法可靠地逐条提取消息）。
++   */
++  const detectHistoryGaps = useCallback(async (
++    type: 'group' | 'friend',
++    peerUid: string,
++    chatType: number,
++    peerUin: string | undefined,
++  ) => {
++    if (!peerUin) return null
++    try {
++      const listRes = await fetch('/api/exports/files')
++      if (!listRes.ok) return null
++      const files: Array<{ fileName: string; chatType?: string; chatId?: string; filePath?: string }> =
++        (await listRes.json())?.data?.files || []
++
++      const jsonFiles = files.filter((f) =>
++        f.chatType === type &&
++        String(f.chatId) === String(peerUin) &&
++        f.fileName.toLowerCase().endsWith('.json'))
++
++      if (!jsonFiles.length) {
++        return { noJsonBaseline: true, gaps: [], queryCount: 0, scannedFiles: [] }
++      }
++
++      // 读原始 JSON。注意不能用 /preview——那个接口会把 JSON 包成 HTML 给 iframe 看。
++      const token = AuthManager.getInstance().getToken() || ""
++      const exported: Array<{ fileName: string; messages: Array<{ id?: string; timestamp?: number }> }> = []
++      for (const f of jsonFiles.slice(0, 12)) {
++        try {
++          const url = f.filePath
++            ? `/api/download-file?path=${encodeURIComponent(f.filePath)}&token=${encodeURIComponent(token)}`
++            : null
++          if (!url) continue
++          const res = await fetch(url)
++          if (!res.ok) continue
++          const data = await res.json()
++          if (Array.isArray(data?.messages)) {
++            exported.push({ fileName: f.fileName, messages: data.messages })
++          }
++        } catch {
++          // 单个文件解析失败不影响整体
++        }
++      }
++      if (!exported.length) {
++        return { noJsonBaseline: true, gaps: [], queryCount: 0, scannedFiles: [] }
++      }
++
++      const countInRange = async (startMs: number, endMs: number) => {
++        const res = await fetch('/api/messages/fetch', {
++          method: 'POST',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify({
++            peer: { chatType, peerUid },
++            filter: { startTime: startMs, endTime: endMs },
++            page: 1,
++            pageSize: 1,
++          }),
++        })
++        if (!res.ok) return 0
++        return Number((await res.json())?.data?.totalCount) || 0
++      }
++
++      return await planIncrementalSync({ exported, countInRange })
++    } catch {
++      return null
++    }
++  }, [])
++
 +  const handleIncrementalUpdate = useCallback(async (
 +    type: 'group' | 'friend',
 +    id: string,
@@ -78,6 +228,40 @@ index 5fd6a87..59adff8 100644
 +    const peerUin = type === 'group' ? id : friends.find((f) => f.uid === id)?.uin
 +
 +    const resume = await resolveResumePoint(type, peerUin, lastExportAt)
++
++    // 顺带检查历史区间有没有"后来才同步下来"的旧消息。
++    // 检测要读已导出的 JSON 并按月/按天查数，可能要几秒，先给个提示。
++    const scanning = addNotification('info', '正在检查', '比对已导出内容与本机消息，查找后同步的历史消息…')
++    const plan = await detectHistoryGaps(type, peer.peerUid, peer.chatType, peerUin)
++    removeNotification(scanning)
++
++    // 历史缺口整理成连续区间，避免一天一个任务
++    const gapRanges = plan && !plan.noJsonBaseline && plan.gaps.length
++      ? mergeAdjacentDays(plan.gaps.map((g) => g.day))
++      : []
++    const gapTotal = plan?.gaps.reduce((s, g) => s + (g.actual - g.exported), 0) ?? 0
++
++    if (gapRanges.length) {
++      const detail = plan!.gaps
++        .slice(0, 6)
++        .map((g) => `${g.day} ${g.exported}→${g.actual}`)
++        .join('、')
++      addNotification(
++        'info',
++        `发现 ${plan!.gaps.length} 天有后同步的历史消息（约 ${gapTotal} 条）`,
++        `${detail}${plan!.gaps.length > 6 ? ' 等' : ''}。` +
++        `这次会先导这些历史区间，导完再单独导新消息。`,
++        undefined,
++        0,
++      )
++    } else if (plan?.noJsonBaseline) {
++      addNotification(
++        'info',
++        '跳过历史检查',
++        '该会话没有 JSON 格式的历史导出，无法做逐条比对。想启用历史补同步检测的话，导出时把格式选成 JSON（或 JSON 和 HTML 各导一份）。',
++      )
++    }
++
 +    addNotification(
 +      'info',
 +      '已定位续传起点',
@@ -87,11 +271,17 @@ index 5fd6a87..59adff8 100644
 +    )
 +
 +    // QCE-CUSTOM-ADDON：增量导出的产物只是一个时间片段、不是完整记录，
-+    // 用「会话名_导出日期」命名，跟完整导出的长文件名区分开。
++    // 用短名字跟完整导出的长文件名区分开。
++    //
++    // 格式必须是官方「友好命名」`会话名(QQ号)_YYYYMMDD_HHMMSS`：官方的合并功能
++    // （/api/merge-resources）靠从文件名里解析出 QQ 号来给会话分组，纯粹的
++    // 「会话名_日期」会被它的正则忽略，导致增量片段没法参与合并。
 +    // 同一天多次更新时，后端 reserve_export_file_name 会自动加 _1 / _2。
 +    const now = new Date()
 +    const pad = (n: number) => String(n).padStart(2, '0')
-+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
++    const stamp =
++      `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
++      `_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
 +    // 导出向导的日期控件用的是 datetime-local，需要本地时间字符串而非 ISO/UTC
 +    const toLocalInput = (d: Date) =>
 +      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
@@ -100,6 +290,14 @@ index 5fd6a87..59adff8 100644
 +    // 格式（JSON/HTML/TXT/EXCEL）和资源、过滤等选项交给用户自己决定。
 +    // 这里直接调 setState 而不是复用 handleOpenTaskWizard，因为后者定义在本函数
 +    // 之后，写进依赖数组会踩 const 的暂时性死区。
++    // 起点取「续传点」和「最早的历史缺口」里更早的那个：这样一个任务就能同时
++    // 覆盖补漏和新消息。重叠部分不用担心，官方合并按 msgId 去重。
++    let startMs = resume.ms
++    if (gapRanges.length) {
++      const earliestGap = dayRange(gapRanges[0].start)[0]
++      if (earliestGap < startMs) startMs = earliestGap
++    }
++
 +    setSelectedPreset({
 +      chatType: peer.chatType,
 +      peerUid: peer.peerUid,
@@ -107,17 +305,20 @@ index 5fd6a87..59adff8 100644
 +      sessionName: name,
 +      // 用最后一条消息的时间本身、而不是 +1 秒：宁可边界上重复一条，
 +      // 也不要因为同一秒内有多条消息而漏掉。
-+      startTime: toLocalInput(new Date(resume.ms)),
++      startTime: toLocalInput(new Date(startMs)),
 +      endTime: toLocalInput(now),
-+      customFileNameStem: `${name}_${stamp}`,
++      // 没拿到 QQ 号时退回不带括号的短名（此时无法参与官方合并，但至少能导出）
++      customFileNameStem: peerUin ? `${name}(${peerUin})_${stamp}` : `${name}_${stamp}`,
++      // 有历史缺口时默认导 JSON：JSON 才能作为下次检测的基线
++      ...(gapRanges.length || plan?.noJsonBaseline ? { format: 'JSON' as const } : {}),
 +    })
 +    setIsTaskWizardOpen(true)
-+  }, [friends, resolveResumePoint, addNotification])
++  }, [friends, resolveResumePoint, detectHistoryGaps, addNotification, removeNotification])
 +
    const handleExportGroupAvatars = useCallback(async (groupCode: string, groupName: string) => {
      const loadingId = addNotification('info', '正在导出', `正在导出群"${groupName}"的成员头像...`)
  
-@@ -2100,6 +2208,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -2100,6 +2351,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                        onExportGroupAvatars={handleExportGroupAvatars}
                        onOpenEssenceModal={handleOpenEssenceModal}
                        onOpenGroupFilesModal={handleOpenGroupFilesModal}
@@ -125,6 +326,44 @@ index 5fd6a87..59adff8 100644
                      />
                    </>
                  )}
+@@ -2257,11 +2509,35 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+                             variant="ghost"
+                             className="h-8 w-8 rounded-full p-0 text-muted-foreground/50 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30"
+                             onClick={() => {
+-                              showDeleteConfirmationToast(`删除任务「${task.sessionName}」？`, "此操作不可撤销", async () => {
++                              // QCE-CUSTOM-ADDON：官方删任务只清记录、不删磁盘文件。
++                              // 有导出文件时多给一个「记录+文件」的选项，避免以为清理干净了、
++                              // 实际文件还占着硬盘。
++                              const fileName = task.fileName
++                              const removeTask = async () => {
+                                 const success = await deleteTask(task.id)
+                                 if (!success) throw new Error("删除失败")
+                                 tasksLoadedRef.current = false
+-                              })
++                              }
++                              showDeleteConfirmationToast(
++                                `删除任务「${task.sessionName}」？`,
++                                fileName
++                                  ? `导出文件：${fileName}（选「仅删记录」则文件保留在本机）`
++                                  : "此操作不可撤销",
++                                removeTask,
++                                fileName
++                                  ? {
++                                      label: "连同文件一起删",
++                                      run: async () => {
++                                        // 先删文件再删记录：万一文件删失败，任务记录还在，
++                                        // 用户能看到是哪一条、可以重试。
++                                        const fileOk = await deleteChatHistoryFile(fileName)
++                                        if (!fileOk) throw new Error("导出文件删除失败，任务记录已保留")
++                                        await removeTask()
++                                        chatHistoryLoadedRef.current = false
++                                      },
++                                    }
++                                  : undefined,
++                              )
+                             }}
+                             title="删除"
+                           >
 diff --git a/qce-v4-tool/components/ui/session-list.tsx b/qce-v4-tool/components/ui/session-list.tsx
 index 679f3ff..8c439f6 100644
 --- a/qce-v4-tool/components/ui/session-list.tsx
@@ -292,6 +531,223 @@ index 6497037..aa4d29a 100644
      },
    }
  
+diff --git a/qce-v4-tool/lib/incremental-sync.ts b/qce-v4-tool/lib/incremental-sync.ts
+new file mode 100644
+index 0000000..08f82f8
+--- /dev/null
++++ b/qce-v4-tool/lib/incremental-sync.ts
+@@ -0,0 +1,211 @@
++/**
++ * QCE-CUSTOM-ADDON：增量更新的"历史补同步"检测。
++ *
++ * 背景：QQ 的消息是懒同步的。电脑端可能今天才把前几天的消息补下来，这些消息
++ * 的 msgTime 是原本的发送时间，会"插"在历史位置。只按"上次导出的最后一条消息
++ * 往后拉"的增量策略会完全错过它们。
++ *
++ * 这里的做法：把已导出文件里"每天有多少条"和本地数据库里"每天实际多少条"
++ * 做对比，找出变多了的日期。
++ *
++ * 性能：跨度几个月的会话逐天查会产生上百次请求，所以用两层查询——先按月粗查，
++ * 只有数量对不上的月份才展开到天。典型情况（只有最近几天变动）能把请求数从
++ * 上百次降到几十次。
++ *
++ * 限制：只支持 JSON 格式的导出文件。HTML 导出没法可靠地把消息逐条抠出来。
++ */
++
++/** 导出文件里的一条消息（只取我们关心的字段）。 */
++interface ExportedMessage {
++  id?: string
++  timestamp?: number
++}
++
++export interface ExportedFileRef {
++  fileName: string
++  chatType?: string
++  chatId?: string
++}
++
++/** 某一天的差异。 */
++export interface DayGap {
++  /** YYYY-MM-DD（本地时区） */
++  day: string
++  /** 已导出文件里这天的条数 */
++  exported: number
++  /** 本地数据库里这天实际的条数 */
++  actual: number
++}
++
++export interface SyncPlan {
++  /** 历史上"变多了"的日期，需要补导 */
++  gaps: DayGap[]
++  /** 已导出内容覆盖到的最后一条消息时间（毫秒），没有已导出内容时为 undefined */
++  coveredUntil?: number
++  /** 参与统计的导出文件 */
++  scannedFiles: string[]
++  /** 实际发出的查询次数，用于向用户交代耗时来源 */
++  queryCount: number
++  /** 没有可用 JSON 导出时为 true——此时只能退回"从上次往后"的朴素增量 */
++  noJsonBaseline: boolean
++}
++
++/** 本地时区的 YYYY-MM-DD。 */
++export function toDayKey(ms: number): string {
++  const d = new Date(ms)
++  const p = (n: number) => String(n).padStart(2, '0')
++  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
++}
++
++/** 本地时区的 YYYY-MM。 */
++export function toMonthKey(ms: number): string {
++  const d = new Date(ms)
++  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
++}
++
++/** 某天的 [起, 止) 毫秒区间（本地时区）。 */
++export function dayRange(day: string): [number, number] {
++  const [y, m, d] = day.split('-').map(Number)
++  const start = new Date(y, m - 1, d, 0, 0, 0, 0).getTime()
++  const end = new Date(y, m - 1, d + 1, 0, 0, 0, 0).getTime()
++  return [start, end]
++}
++
++/** 某月的 [起, 止) 毫秒区间（本地时区）。 */
++export function monthRange(month: string): [number, number] {
++  const [y, m] = month.split('-').map(Number)
++  const start = new Date(y, m - 1, 1, 0, 0, 0, 0).getTime()
++  const end = new Date(y, m, 1, 0, 0, 0, 0).getTime()
++  return [start, end]
++}
++
++/** 列出某月里已经开始了的日期（不含未来）。 */
++function daysInMonth(month: string, notAfter: number): string[] {
++  const [y, m] = month.split('-').map(Number)
++  const out: string[] = []
++  for (let d = 1; d <= 31; d++) {
++    const t = new Date(y, m - 1, d, 0, 0, 0, 0)
++    if (t.getMonth() !== m - 1) break // 跨月了
++    if (t.getTime() > notAfter) break
++    out.push(toDayKey(t.getTime()))
++  }
++  return out
++}
++
++/**
++ * 统计已导出 JSON 里每天的消息条数。
++ * 同一条消息可能出现在多个导出文件里（比如重叠区间），按 msgId 去重，
++ * 和官方合并的去重口径保持一致。
++ */
++export function tallyExported(
++  files: Array<{ fileName: string; messages: ExportedMessage[] }>,
++): { byDay: Map<string, number>; coveredUntil?: number; seenIds: Set<string> } {
++  const byDay = new Map<string, number>()
++  const seenIds = new Set<string>()
++  let coveredUntil: number | undefined
++
++  for (const f of files) {
++    for (const m of f.messages) {
++      const ts = Number(m.timestamp)
++      if (!Number.isFinite(ts) || ts <= 0) continue
++      const id = m.id ? String(m.id) : `${ts}`
++      if (seenIds.has(id)) continue
++      seenIds.add(id)
++      const day = toDayKey(ts)
++      byDay.set(day, (byDay.get(day) || 0) + 1)
++      if (coveredUntil === undefined || ts > coveredUntil) coveredUntil = ts
++    }
++  }
++  return { byDay, coveredUntil, seenIds }
++}
++
++/**
++ * 两层比对：先按月，再对有差异的月份展开到天。
++ *
++ * @param countInRange 查询本地某时间区间内的消息条数
++ */
++export async function planIncrementalSync(opts: {
++  exported: Array<{ fileName: string; messages: ExportedMessage[] }>
++  countInRange: (startMs: number, endMs: number) => Promise<number>
++  /** 只检查这个时间点之前的历史，默认现在 */
++  now?: number
++  /** 最多回溯多少天（默认 400 天，避免超长会话打太多请求） */
++  maxLookbackDays?: number
++}): Promise<SyncPlan> {
++  const now = opts.now ?? Date.now()
++  const maxLookback = (opts.maxLookbackDays ?? 400) * 86_400_000
++
++  if (!opts.exported.length) {
++    return { gaps: [], scannedFiles: [], queryCount: 0, noJsonBaseline: true }
++  }
++
++  const { byDay, coveredUntil } = tallyExported(opts.exported)
++  const scannedFiles = opts.exported.map((f) => f.fileName)
++  let queryCount = 0
++
++  if (!byDay.size || coveredUntil === undefined) {
++    return { gaps: [], coveredUntil, scannedFiles, queryCount, noJsonBaseline: false }
++  }
++
++  // 已导出内容覆盖的月份集合（只在这些月份里找"变多了"的天；
++  // 完全没导出过的历史月份不属于"补同步"，属于用户自己没导，不在这里管）
++  const months = new Set<string>()
++  const earliestAllowed = now - maxLookback
++  for (const day of byDay.keys()) {
++    const [start] = dayRange(day)
++    if (start < earliestAllowed) continue
++    months.add(day.slice(0, 7))
++  }
++
++  const gaps: DayGap[] = []
++  for (const month of Array.from(months).sort()) {
++    const [ms, me] = monthRange(month)
++    const monthEnd = Math.min(me, now)
++    if (monthEnd <= ms) continue
++
++    // 该月已导出的条数
++    let exportedInMonth = 0
++    for (const [day, n] of byDay) {
++      if (day.startsWith(month)) exportedInMonth += n
++    }
++
++    const actualInMonth = await opts.countInRange(ms, monthEnd)
++    queryCount++
++    // 只关心"本地比导出多"。少的情况通常是导出时用了过滤条件，不该当成缺口。
++    if (actualInMonth <= exportedInMonth) continue
++
++    // 该月有差异 → 展开到天
++    for (const day of daysInMonth(month, now)) {
++      const [ds, de] = dayRange(day)
++      if (ds < earliestAllowed) continue
++      const exported = byDay.get(day) || 0
++      const actual = await opts.countInRange(ds, Math.min(de, now))
++      queryCount++
++      if (actual > exported) gaps.push({ day, exported, actual })
++    }
++  }
++
++  return { gaps, coveredUntil, scannedFiles, queryCount, noJsonBaseline: false }
++}
++
++/** 把相邻的缺口日期合并成连续区间，减少导出任务数。 */
++export function mergeAdjacentDays(days: string[]): Array<{ start: string; end: string }> {
++  if (!days.length) return []
++  const sorted = [...days].sort()
++  const out: Array<{ start: string; end: string }> = []
++  let start = sorted[0]
++  let prev = sorted[0]
++  for (const day of sorted.slice(1)) {
++    const [prevStart] = dayRange(prev)
++    const [curStart] = dayRange(day)
++    if (curStart - prevStart <= 86_400_000) {
++      prev = day
++      continue
++    }
++    out.push({ start, end: prev })
++    start = day
++    prev = day
++  }
++  out.push({ start, end: prev })
++  return out
++}
 diff --git a/qce-v4-tool/types/api.ts b/qce-v4-tool/types/api.ts
 index 7f16047..1efeadd 100644
 --- a/qce-v4-tool/types/api.ts
