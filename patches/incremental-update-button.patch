@@ -1,5 +1,5 @@
 diff --git a/qce-v4-tool/app/page.tsx b/qce-v4-tool/app/page.tsx
-index 5fd6a87..15476c9 100644
+index 5fd6a87..4bcb229 100644
 --- a/qce-v4-tool/app/page.tsx
 +++ b/qce-v4-tool/app/page.tsx
 @@ -90,6 +90,8 @@ import { BUILD_VERSION, isNewerVersion, isMajorUpdate, extractReleaseImage } fro
@@ -7,7 +7,7 @@ index 5fd6a87..15476c9 100644
  import { SecurityExposureBanner } from "@/components/ui/security-exposure-banner"
  import AuthManager from "@/lib/auth"
 +// QCE-CUSTOM-ADDON：历史补同步检测
-+import { planIncrementalSync, mergeAdjacentDays, dayRange } from "@/lib/incremental-sync"
++import { planIncrementalSync, mergeAdjacentDays, dayRange, extractMessagesFromExport } from "@/lib/incremental-sync"
  import { classifySpecialChatType, specialKindLabel } from "@/lib/special-contacts"
  import {
    scheduledExportConfigToForm,
@@ -77,7 +77,7 @@ index 5fd6a87..15476c9 100644
          },
        ],
      })
-@@ -539,6 +556,240 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -539,6 +556,248 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
      }
    }, [addNotification])
  
@@ -165,19 +165,22 @@ index 5fd6a87..15476c9 100644
 +      const files: Array<{ fileName: string; chatType?: string; chatId?: string; filePath?: string }> =
 +        (await listRes.json())?.data?.files || []
 +
-+      const jsonFiles = files.filter((f) =>
-+        f.chatType === type &&
-+        String(f.chatId) === String(peerUin) &&
-+        f.fileName.toLowerCase().endsWith('.json'))
++      // JSON 和 HTML 都能做基线：官方 HTML 是 chunked 模式，消息以结构化
++      // 数据内嵌在页面里（带 msgId 和毫秒时间戳），逐条解析出来即可。
++      const baseFiles = files.filter((f) => {
++        if (f.chatType !== type || String(f.chatId) !== String(peerUin)) return false
++        const n = f.fileName.toLowerCase()
++        return n.endsWith('.json') || n.endsWith('.html') || n.endsWith('.htm')
++      })
 +
-+      if (!jsonFiles.length) {
++      if (!baseFiles.length) {
 +        return { noJsonBaseline: true, gaps: [], queryCount: 0, scannedFiles: [] }
 +      }
 +
-+      // 读原始 JSON。注意不能用 /preview——那个接口会把 JSON 包成 HTML 给 iframe 看。
++      // 读原始内容。注意不能用 /preview——那个接口会把 JSON 包成 HTML 给 iframe 看。
 +      const token = AuthManager.getInstance().getToken() || ""
 +      const exported: Array<{ fileName: string; messages: Array<{ id?: string; timestamp?: number }> }> = []
-+      for (const f of jsonFiles.slice(0, 12)) {
++      for (const f of baseFiles.slice(0, 12)) {
 +        try {
 +          const url = f.filePath
 +            ? `/api/download-file?path=${encodeURIComponent(f.filePath)}&token=${encodeURIComponent(token)}`
@@ -185,9 +188,9 @@ index 5fd6a87..15476c9 100644
 +          if (!url) continue
 +          const res = await fetch(url)
 +          if (!res.ok) continue
-+          const data = await res.json()
-+          if (Array.isArray(data?.messages)) {
-+            exported.push({ fileName: f.fileName, messages: data.messages })
++          const messages = extractMessagesFromExport(f.fileName, await res.text())
++          if (messages.length) {
++            exported.push({ fileName: f.fileName, messages })
 +          }
 +        } catch {
 +          // 单个文件解析失败不影响整体
@@ -258,7 +261,13 @@ index 5fd6a87..15476c9 100644
 +      addNotification(
 +        'info',
 +        '跳过历史检查',
-+        '该会话没有 JSON 格式的历史导出，无法做逐条比对。想启用历史补同步检测的话，导出时把格式选成 JSON（或 JSON 和 HTML 各导一份）。',
++        '该会话还没有可用作比对基线的历史导出（支持 JSON 和 HTML）。这次导完之后，以后再点"更新"就能自动检测后同步的历史消息了。',
++      )
++    } else if (plan && !plan.gaps.length) {
++      addNotification(
++        'info',
++        '历史消息无变化',
++        `比对了 ${plan.scannedFiles.length} 份历史导出，没发现后同步进来的旧消息（${plan.queryCount} 次查询）。`,
 +      )
 +    }
 +
@@ -309,8 +318,7 @@ index 5fd6a87..15476c9 100644
 +      endTime: toLocalInput(now),
 +      // 没拿到 QQ 号时退回不带括号的短名（此时无法参与官方合并，但至少能导出）
 +      customFileNameStem: peerUin ? `${name}(${peerUin})_${stamp}` : `${name}_${stamp}`,
-+      // 有历史缺口时默认导 JSON：JSON 才能作为下次检测的基线
-+      ...(gapRanges.length || plan?.noJsonBaseline ? { format: 'JSON' as const } : {}),
++      // 格式不预设：JSON 和 HTML 都能作为下次检测的基线，交给用户选。
 +    })
 +    setIsTaskWizardOpen(true)
 +  }, [friends, resolveResumePoint, detectHistoryGaps, addNotification, removeNotification])
@@ -318,7 +326,7 @@ index 5fd6a87..15476c9 100644
    const handleExportGroupAvatars = useCallback(async (groupCode: string, groupName: string) => {
      const loadingId = addNotification('info', '正在导出', `正在导出群"${groupName}"的成员头像...`)
  
-@@ -2100,6 +2351,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -2100,6 +2359,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                        onExportGroupAvatars={handleExportGroupAvatars}
                        onOpenEssenceModal={handleOpenEssenceModal}
                        onOpenGroupFilesModal={handleOpenGroupFilesModal}
@@ -326,7 +334,7 @@ index 5fd6a87..15476c9 100644
                      />
                    </>
                  )}
-@@ -2257,11 +2509,35 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -2257,11 +2517,35 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                              variant="ghost"
                              className="h-8 w-8 rounded-full p-0 text-muted-foreground/50 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30"
                              onClick={() => {
@@ -533,10 +541,10 @@ index 6497037..aa4d29a 100644
  
 diff --git a/qce-v4-tool/lib/incremental-sync.ts b/qce-v4-tool/lib/incremental-sync.ts
 new file mode 100644
-index 0000000..08f82f8
+index 0000000..d690fc0
 --- /dev/null
 +++ b/qce-v4-tool/lib/incremental-sync.ts
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,291 @@
 +/**
 + * QCE-CUSTOM-ADDON：增量更新的"历史补同步"检测。
 + *
@@ -551,7 +559,9 @@ index 0000000..08f82f8
 + * 只有数量对不上的月份才展开到天。典型情况（只有最近几天变动）能把请求数从
 + * 上百次降到几十次。
 + *
-+ * 限制：只支持 JSON 格式的导出文件。HTML 导出没法可靠地把消息逐条抠出来。
++ * 支持 JSON 和 HTML 两种导出做基线。HTML 用的是官方 chunked 模式，消息以
++ * `__QCE_CHUNK__({id:"c000001",messages:[{"id":..,"ts":..},...]})` 的形式内嵌在
++ * 页面里供前端渲染，逐条解析出 id / ts 完全可行。
 + */
 +
 +/** 导出文件里的一条消息（只取我们关心的字段）。 */
@@ -587,6 +597,84 @@ index 0000000..08f82f8
 +  queryCount: number
 +  /** 没有可用 JSON 导出时为 true——此时只能退回"从上次往后"的朴素增量 */
 +  noJsonBaseline: boolean
++}
++
++/**
++ * 从导出文件的原始内容里提取消息（只要 id 和时间戳）。
++ *
++ * - `.json`：直接取 `messages[]` 的 `id` / `timestamp`
++ * - `.html`：官方 chunked 导出会把消息内嵌成
++ *   `__QCE_CHUNK__({id:"c000001",messages:[{"id":"msg-xxx","ts":1775134902000,...}]})`，
++ *   逐个 chunk 抠出 messages 数组解析即可。这里不用正则去匹配整个数组（消息里
++ *   带着渲染好的 HTML，嵌套引号和括号会让正则失效），而是从 `messages:[` 往后
++ *   做括号配对扫描，稳妥地取出完整的 JSON 数组。
++ */
++export function extractMessagesFromExport(
++  fileName: string,
++  raw: string,
++): ExportedMessage[] {
++  const lower = fileName.toLowerCase()
++
++  if (lower.endsWith('.json')) {
++    try {
++      const data = JSON.parse(raw)
++      return Array.isArray(data?.messages) ? data.messages : []
++    } catch {
++      return []
++    }
++  }
++
++  if (!lower.endsWith('.html') && !lower.endsWith('.htm')) return []
++
++  const out: ExportedMessage[] = []
++  const marker = 'messages:['
++  let cursor = 0
++  while (true) {
++    const at = raw.indexOf(marker, cursor)
++    if (at === -1) break
++    const arrStart = at + marker.length - 1 // 指向 '['
++    const arrEnd = matchBracket(raw, arrStart)
++    cursor = arrEnd === -1 ? at + marker.length : arrEnd + 1
++    if (arrEnd === -1) continue
++    try {
++      const arr = JSON.parse(raw.slice(arrStart, arrEnd + 1))
++      if (!Array.isArray(arr)) continue
++      for (const m of arr) {
++        // chunked HTML 用 ts，JSON 用 timestamp
++        const ts = Number(m?.ts ?? m?.timestamp)
++        if (!Number.isFinite(ts)) continue
++        out.push({ id: m?.id ? String(m.id) : undefined, timestamp: ts })
++      }
++    } catch {
++      // 该 chunk 解析失败就跳过，其它 chunk 不受影响
++    }
++  }
++  return out
++}
++
++/**
++ * 从 `open` 位置的 `[` 开始做括号配对，返回配对的 `]` 下标；找不到返回 -1。
++ * 会跳过字符串字面量（含转义），避免消息正文里的括号干扰。
++ */
++function matchBracket(s: string, open: number): number {
++  let depth = 0
++  let inStr = false
++  let quote = ''
++  for (let i = open; i < s.length; i++) {
++    const c = s[i]
++    if (inStr) {
++      if (c === '\\') { i++; continue }
++      if (c === quote) inStr = false
++      continue
++    }
++    if (c === '"' || c === "'") { inStr = true; quote = c; continue }
++    if (c === '[' || c === '{') depth++
++    else if (c === ']' || c === '}') {
++      depth--
++      if (depth === 0) return i
++    }
++  }
++  return -1
 +}
 +
 +/** 本地时区的 YYYY-MM-DD。 */
