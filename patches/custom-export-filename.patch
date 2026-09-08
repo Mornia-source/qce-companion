@@ -1,8 +1,8 @@
 diff --git a/qq-chat-export-server/src/api/routes/messages.rs b/qq-chat-export-server/src/api/routes/messages.rs
-index c820abe..02c90ea 100644
+index c820abe..6c88454 100644
 --- a/qq-chat-export-server/src/api/routes/messages.rs
 +++ b/qq-chat-export-server/src/api/routes/messages.rs
-@@ -886,16 +886,29 @@ pub async fn export_messages(
+@@ -886,16 +892,29 @@ pub async fn export_messages(
  
      let task_id = generate_task_id("export");
      let prefix = chat_type_prefix(Some(req.chat_type));

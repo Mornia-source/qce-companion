@@ -25,13 +25,25 @@ HTML、JSON、TXT、Excel 等格式，并支持定时导出、批量任务等功
 | --- | --- | --- |
 | `patches/incremental-update-button.patch` | 给 QCE 的 Web UI（`qce-v4-tool`）打的补丁：已经导出过的**好友**，列表里的"导出"按钮变成"更新"，点一下只拉取上次导出之后的新消息。**续传起点取自上一次导出文件里最后一条消息的时间**（读官方 `/api/exports/files/:name/info` 的 `timeRange`），而不是上次导出任务的完成时间——后者在上次导出设过截止日期时会漏掉中间那段。（群组不改造，官方 v6.2+ 的"导出任务"模块已提供更完整的群组增量方案。） | 是，4 个前端文件，见下文 |
 | `patches/custom-export-filename.patch` | 给 Rust 服务端加一个可选的 `options.customFileNameStem`，允许调用方指定导出文件名主干。增量导出用它产出 `会话名_20260901.json` 这种短名字，和完整导出的长文件名区分开。不传该字段时完全走官方原命名逻辑。 | 是，`qq-chat-export-server` 一处约 15 行 |
+| `patches/fix-fetch-time-filter-unit.patch` | **修官方 bug**：`POST /api/messages/fetch`（消息预览）把请求里的秒级时间戳直接塞进 `MessageFilter`，而该字段约定是毫秒，导致任何带时间范围的预览恒返回 0 条。导出路径本来就调了 `normalize_to_ms`，这里补齐。实测同一查询由 `0 条` 变为 `473 条`。**导出功能不受此 bug 影响**，历史导出数据无需重做。 | 是，`qq-chat-export-server` 一处 2 行 |
 | `scripts/一键启动.bat` | 假设你本机是 `NapCatQQ` 源码 + `qq-chat-exporter` 源码 + 本仓库三个目录平级放置，双击就能关闭现有 QQ、以注入模式启动 NapCat（自动带上 QCE 插件）。 | 否 |
 | `scripts/重新构建前端.bat` | 打完补丁或者 `git pull` 官方更新之后，重新构建 `qce-v4-tool` 前端并部署到 NapCat 插件目录。 | 否 |
 
-> ⚠️ 打了 `custom-export-filename.patch` 之后，除了重新构建前端，**还需要重新编译
-> Rust 服务端**（`cd qq-chat-export-server && cargo build --release`，约 2~7 分钟），
-> 再把产出的 `qce-server.exe` 覆盖到插件的 `runtime/` 目录。Windows 上如果项目路径
-> 含中文，`link.exe` 可能报错，把 crate 复制到纯英文路径下编译即可。
+> ⚠️ 打了两个 Rust 补丁（`custom-export-filename` / `fix-fetch-time-filter-unit`）
+> 之后，除了重新构建前端，**还需要重新编译 Rust 服务端**
+> （`cd qq-chat-export-server && cargo build --release`，约 2~7 分钟），
+> 再把产出的 `qce-server.exe` 覆盖到插件的 `runtime/` 目录。
+>
+> Windows 上编译有两个坑：
+> 1. 项目路径含中文时 `link.exe` 可能报错（实际是 Git Bash 的 `/usr/bin/link.exe`
+>    抢占了 MSVC 链接器），把两个 crate 复制到**纯英文路径**下编译即可。
+> 2. 不要把编译目录放在 `%TEMP%` 下——清理软件会删掉 `target/` 里的构建产物
+>    （典型症状：`couldn't read .../out/bindgen.rs`），而且 `cargo clean -p` 救不回来，
+>    只能全量重编。建议固定用类似 `C:\Users\<你>\qce-build` 的位置。
+>
+> **替换 `qce-server.exe` 前先确认没有正在运行的导出任务**，否则任务会被强杀，
+> 既拿不到成品，还会在导出目录里留下 `.qce_spool_*.jsonl` 中间文件（大群可能上 GB）。
+> 替换完在 NapCat 面板「插件管理」里把插件禁用再启用，就会拉起新的 exe。
 
 > **曾经有个 `chat-viewer.html`（离线聊天气泡查看器），现已移除。**
 > 官方导出时直接选 HTML 格式就能得到聊天气泡界面，并且勾上「生成自包含 HTML」
@@ -48,8 +60,19 @@ HTML、JSON、TXT、Excel 等格式，并支持定时导出、批量任务等功
 
 ```bash
 cd qq-chat-exporter   # 你自己的 QCE 源码目录
-git apply /path/to/qce-companion/patches/incremental-update-button.patch
+P=/path/to/qce-companion/patches
+
+# 只要"更新"按钮的话，打这一个就够（纯前端，不用编译 Rust）
+git apply $P/incremental-update-button.patch
+
+# 想让增量导出产出「会话名_日期」这种短文件名，再加这个（需要重新编译 Rust）
+git apply $P/custom-export-filename.patch
+
+# 顺手修掉官方预览接口的时间过滤 bug（同样需要重新编译 Rust）
+git apply $P/fix-fetch-time-filter-unit.patch
 ```
+
+三个补丁互相独立，可以单独打，也可以一起打。
 
 打完补丁后照常重新构建前端并部署（或者直接用 `scripts/重新构建前端.bat`，需要把
 里面路径变量改成你自己的目录布局）：
@@ -133,7 +156,9 @@ qce-companion/
 ├── README.md
 ├── LICENSE                          # GPL-3.0，与 QCE 官方项目一致
 ├── patches/
-│   └── incremental-update-button.patch
+│   ├── incremental-update-button.patch    # 前端：好友增量更新按钮
+│   ├── custom-export-filename.patch       # Rust：自定义导出文件名
+│   └── fix-fetch-time-filter-unit.patch   # Rust：修官方预览时间过滤 bug
 └── scripts/
     ├── 一键启动.bat
     └── 重新构建前端.bat

@@ -1,0 +1,21 @@
+diff --git a/qq-chat-export-server/src/api/routes/messages.rs b/qq-chat-export-server/src/api/routes/messages.rs
+index c820abe..6c88454 100644
+--- a/qq-chat-export-server/src/api/routes/messages.rs
++++ b/qq-chat-export-server/src/api/routes/messages.rs
+@@ -460,8 +460,14 @@ pub async fn fetch_messages(
+     let limit = loose_i64(body.get("limit")).unwrap_or(50).clamp(1, 2000);
+     let force_refresh = loose_bool(body.get("forceRefresh")) || loose_bool(body.get("bypassCache"));
+ 
+-    let start_time = loose_i64(filter.get("startTime"));
+-    let end_time = loose_i64(filter.get("endTime"));
++    // QCE-CUSTOM-ADDON（bug 修复）：MessageFilter.start_time / end_time 的约定是
++    // 毫秒时间戳，但这里原本把请求里的值原样透传。前端和导出接口一样传的是秒级
++    // 时间戳，被当成毫秒去比较后，整个范围会落到 1970 年，导致任何带时间范围的
++    // 预览都返回 0 条。导出路径（run_export_task）本来就调了 normalize_to_ms，
++    // 这里补齐即可。在取值处统一归一，顺带让下面的时间校验和缓存 key 也用同一单位
++    // （同一时刻用秒或毫秒传入会命中同一份缓存）。
++    let start_time = loose_i64(filter.get("startTime")).map(normalize_to_ms);
++    let end_time = loose_i64(filter.get("endTime")).map(normalize_to_ms);
+     if let (Some(start), Some(end)) = (start_time, end_time) {
+         if end < start {
+             let err = ApiError::validation("结束时间不能早于开始时间", "INVALID_TIME_RANGE");
