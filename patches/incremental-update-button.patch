@@ -1,8 +1,8 @@
 diff --git a/qce-v4-tool/app/page.tsx b/qce-v4-tool/app/page.tsx
-index 5fd6a87..1d76aa7 100644
+index 5fd6a87..59adff8 100644
 --- a/qce-v4-tool/app/page.tsx
 +++ b/qce-v4-tool/app/page.tsx
-@@ -539,6 +539,113 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -539,6 +539,114 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
      }
    }, [addNotification])
  
@@ -80,9 +80,9 @@ index 5fd6a87..1d76aa7 100644
 +    const resume = await resolveResumePoint(type, peerUin, lastExportAt)
 +    addNotification(
 +      'info',
-+      '正在续传',
++      '已定位续传起点',
 +      resume.fromFile
-+        ? `从上次导出的最后一条消息接着导（依据：${resume.fromFile}）`
++        ? `接着上次导出的最后一条消息往后导（依据：${resume.fromFile}），格式和选项可在下面的导出面板里调整`
 +        : '没找到可用的历史导出文件，改用上次导出任务的时间作为起点',
 +    )
 +
@@ -92,31 +92,32 @@ index 5fd6a87..1d76aa7 100644
 +    const now = new Date()
 +    const pad = (n: number) => String(n).padStart(2, '0')
 +    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
++    // 导出向导的日期控件用的是 datetime-local，需要本地时间字符串而非 ISO/UTC
++    const toLocalInput = (d: Date) =>
++      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 +
-+    const success = await createTask({
++    // 不再直接建任务：打开官方导出向导，只把时间范围和文件名预填好，
++    // 格式（JSON/HTML/TXT/EXCEL）和资源、过滤等选项交给用户自己决定。
++    // 这里直接调 setState 而不是复用 handleOpenTaskWizard，因为后者定义在本函数
++    // 之后，写进依赖数组会踩 const 的暂时性死区。
++    setSelectedPreset({
 +      chatType: peer.chatType,
 +      peerUid: peer.peerUid,
 +      peerUin,
 +      sessionName: name,
-+      format: "JSON",
 +      // 用最后一条消息的时间本身、而不是 +1 秒：宁可边界上重复一条，
 +      // 也不要因为同一秒内有多条消息而漏掉。
-+      startTime: new Date(resume.ms).toISOString(),
-+      endTime: now.toISOString(),
-+      includeRecalled: false,
-+      includeSystemMessages: true,
-+      filterPureImageMessages: false,
++      startTime: toLocalInput(new Date(resume.ms)),
++      endTime: toLocalInput(now),
 +      customFileNameStem: `${name}_${stamp}`,
 +    })
-+    if (success) {
-+      tasksLoadedRef.current = false
-+    }
-+  }, [createTask, friends, resolveResumePoint, addNotification])
++    setIsTaskWizardOpen(true)
++  }, [friends, resolveResumePoint, addNotification])
 +
    const handleExportGroupAvatars = useCallback(async (groupCode: string, groupName: string) => {
      const loadingId = addNotification('info', '正在导出', `正在导出群"${groupName}"的成员头像...`)
  
-@@ -2100,6 +2207,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -2100,6 +2208,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                        onExportGroupAvatars={handleExportGroupAvatars}
                        onOpenEssenceModal={handleOpenEssenceModal}
                        onOpenGroupFilesModal={handleOpenGroupFilesModal}
@@ -251,6 +252,31 @@ index 679f3ff..8c439f6 100644
  
    return (
      <div className="space-y-0">
+diff --git a/qce-v4-tool/components/ui/task-wizard.tsx b/qce-v4-tool/components/ui/task-wizard.tsx
+index 797df4f..9013879 100644
+--- a/qce-v4-tool/components/ui/task-wizard.tsx
++++ b/qce-v4-tool/components/ui/task-wizard.tsx
+@@ -178,6 +178,9 @@ const mergePrefilledForm = (
+     preferGroupMemberName:
+       prefilledData.preferGroupMemberName ?? base.preferGroupMemberName,
+     debugExport: prefilledData.debugExport ?? base.debugExport,
++    // QCE-CUSTOM-ADDON：自定义文件名主干（增量续传导出用）
++    customFileNameStem:
++      prefilledData.customFileNameStem ?? base.customFileNameStem,
+   }
+ }
+ 
+@@ -259,6 +262,10 @@ export function TaskWizard({
+       prefilledData
+     )
+     setForm(nextForm)
++    // QCE-CUSTOM-ADDON：预填了起始时间（增量续传）时把时间范围切到"自定义"，
++    // 否则界面高亮"全部消息"、日期选择器也不显示，但提交时却带着 startTime，
++    // 用户会以为自己导的是全部记录。
++    setTimeRangeMode(nextForm.startTime ? 'custom' : 'all')
+     setPreferencesReady(true)
+   }, [prefilledData, isOpen])
+ 
 diff --git a/qce-v4-tool/lib/export-request.ts b/qce-v4-tool/lib/export-request.ts
 index 6497037..aa4d29a 100644
 --- a/qce-v4-tool/lib/export-request.ts
