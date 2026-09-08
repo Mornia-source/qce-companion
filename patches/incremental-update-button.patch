@@ -1,5 +1,5 @@
 diff --git a/qce-v4-tool/app/page.tsx b/qce-v4-tool/app/page.tsx
-index 5fd6a87..4bcb229 100644
+index 5fd6a87..7eeac19 100644
 --- a/qce-v4-tool/app/page.tsx
 +++ b/qce-v4-tool/app/page.tsx
 @@ -90,6 +90,8 @@ import { BUILD_VERSION, isNewerVersion, isMajorUpdate, extractReleaseImage } fro
@@ -77,7 +77,7 @@ index 5fd6a87..4bcb229 100644
          },
        ],
      })
-@@ -539,6 +556,248 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -539,6 +556,369 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
      }
    }, [addNotification])
  
@@ -157,6 +157,7 @@ index 5fd6a87..4bcb229 100644
 +    peerUid: string,
 +    chatType: number,
 +    peerUin: string | undefined,
++    onProgress?: (info: { done: number; total: number; label: string }) => void,
 +  ) => {
 +    if (!peerUin) return null
 +    try {
@@ -180,7 +181,10 @@ index 5fd6a87..4bcb229 100644
 +      // 读原始内容。注意不能用 /preview——那个接口会把 JSON 包成 HTML 给 iframe 看。
 +      const token = AuthManager.getInstance().getToken() || ""
 +      const exported: Array<{ fileName: string; messages: Array<{ id?: string; timestamp?: number }> }> = []
-+      for (const f of baseFiles.slice(0, 12)) {
++      const pickedFiles = baseFiles.slice(0, 12)
++      for (let i = 0; i < pickedFiles.length; i++) {
++        const f = pickedFiles[i]
++        onProgress?.({ done: i, total: pickedFiles.length, label: `读取 ${f.fileName.slice(0, 28)}` })
 +        try {
 +          const url = f.filePath
 +            ? `/api/download-file?path=${encodeURIComponent(f.filePath)}&token=${encodeURIComponent(token)}`
@@ -215,11 +219,107 @@ index 5fd6a87..4bcb229 100644
 +        return Number((await res.json())?.data?.totalCount) || 0
 +      }
 +
-+      return await planIncrementalSync({ exported, countInRange })
++      return await planIncrementalSync({ exported, countInRange, onProgress, concurrency: 4 })
 +    } catch {
 +      return null
 +    }
 +  }, [])
++
++  /**
++   * QCE-CUSTOM-ADDON：增量更新产生的片段自动合并成一份完整记录。
++   *
++   * 官方的 /api/merge-resources 只从 **JSON** 读消息（HTML 仅用来定位同名 json），
++   * 所以增量片段固定导 JSON；合并时 formats 传 ['JSON','HTML']，一次产出两种
++   * 格式的完整记录——JSON 作为下次比对的基线，HTML 用来看。
++   *
++   * key 是 peerUid；值记录发起更新时的会话信息。任务完成后由下面的 effect 消费。
++   */
++  const pendingMergeRef = useRef<Map<string, { sessionName: string; peerUin?: string; type: 'group' | 'friend' }>>(new Map())
++  const mergedTaskIdsRef = useRef<Set<string>>(new Set())
++
++  const runAutoMerge = useCallback(async (
++    peerUid: string,
++    info: { sessionName: string; peerUin?: string; type: 'group' | 'friend' },
++  ) => {
++    if (!info.peerUin) return
++    const t = toast.loading('正在合并', {
++      description: `把「${info.sessionName}」的导出片段合并成一份完整记录…`,
++      duration: Number.POSITIVE_INFINITY,
++    })
++    try {
++      const listRes = await fetch('/api/exports/files')
++      const files: Array<{ fileName: string; chatType?: string; chatId?: string }> =
++        (await listRes.json())?.data?.files || []
++      // 只有 JSON 能参与合并
++      const sources = files
++        .filter((f) =>
++          f.chatType === info.type &&
++          String(f.chatId) === String(info.peerUin) &&
++          f.fileName.toLowerCase().endsWith('.json'))
++        .map((f) => f.fileName)
++
++      if (sources.length < 2) {
++        toast.update(t, {
++          type: 'info',
++          title: '暂不需要合并',
++          description: sources.length === 1
++            ? '该会话目前只有 1 份 JSON 导出，等下次更新产生新片段后就能合并了。'
++            : '该会话还没有 JSON 导出，无法合并（官方合并只支持 JSON 源文件）。',
++          duration: 6000,
++        })
++        return
++      }
++
++      const res = await fetch('/api/merge-resources', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          sourceTaskIds: sources.slice(0, 100),
++          deduplicateMessages: true,
++          // 不删源文件：片段留着当"这次更新拿到了什么"的凭据，用户可自行清理
++          deleteSourceFiles: false,
++          formats: ['JSON', 'HTML'],
++        }),
++      })
++      const json = await res.json()
++      const group = json?.data?.result?.groups?.[0]
++      if (!res.ok || !group || group.status !== 'success') {
++        throw new Error(json?.error?.message || '合并失败')
++      }
++      toast.update(t, {
++        type: 'success',
++        title: '已合并成完整记录',
++        description:
++          `合并 ${sources.length} 份导出，共 ${group.totalMessages} 条` +
++          `（去重 ${group.deduplicatedMessages} 条）。产物在导出目录的 merged 文件夹里，JSON 和 HTML 各一份。`,
++        duration: 10000,
++      })
++      chatHistoryLoadedRef.current = false
++    } catch (err) {
++      toast.update(t, {
++        type: 'error',
++        title: '合并失败',
++        description: err instanceof Error ? err.message : '未知错误',
++        duration: 8000,
++      })
++    }
++  }, [])
++
++  // 增量更新的导出任务一完成，就触发合并
++  useEffect(() => {
++    if (!pendingMergeRef.current.size) return
++    for (const task of tasks) {
++      if (task.status !== 'completed') continue
++      if (mergedTaskIdsRef.current.has(task.id)) continue
++      const uid = task.peer?.peerUid
++      if (!uid) continue
++      const info = pendingMergeRef.current.get(uid)
++      if (!info) continue
++      mergedTaskIdsRef.current.add(task.id)
++      pendingMergeRef.current.delete(uid)
++      void runAutoMerge(uid, info)
++    }
++  }, [tasks, runAutoMerge])
 +
 +  const handleIncrementalUpdate = useCallback(async (
 +    type: 'group' | 'friend',
@@ -233,10 +333,24 @@ index 5fd6a87..4bcb229 100644
 +    const resume = await resolveResumePoint(type, peerUin, lastExportAt)
 +
 +    // 顺带检查历史区间有没有"后来才同步下来"的旧消息。
-+    // 检测要读已导出的 JSON 并按月/按天查数，可能要几秒，先给个提示。
-+    const scanning = addNotification('info', '正在检查', '比对已导出内容与本机消息，查找后同步的历史消息…')
-+    const plan = await detectHistoryGaps(type, peer.peerUid, peer.chatType, peerUin)
-+    removeNotification(scanning)
++    // 这一步要读已导出文件、再按月/按天查本地条数，大会话上可能要十几秒到
++    // 几十秒，所以用一条可持续更新的 toast 实时播报进度，否则看着像卡死。
++    const scanToast = toast.loading('正在检查历史消息', {
++      description: '读取已导出内容…',
++      duration: Number.POSITIVE_INFINITY,
++    })
++    const plan = await detectHistoryGaps(
++      type, peer.peerUid, peer.chatType, peerUin,
++      (info) => {
++        toast.update(scanToast, {
++          type: 'loading',
++          title: '正在检查历史消息',
++          description: `${info.label}（${info.done}/${info.total}）`,
++          duration: Number.POSITIVE_INFINITY,
++        })
++      },
++    )
++    toast.dismiss(scanToast)
 +
 +    // 历史缺口整理成连续区间，避免一天一个任务
 +    const gapRanges = plan && !plan.noJsonBaseline && plan.gaps.length
@@ -318,15 +432,22 @@ index 5fd6a87..4bcb229 100644
 +      endTime: toLocalInput(now),
 +      // 没拿到 QQ 号时退回不带括号的短名（此时无法参与官方合并，但至少能导出）
 +      customFileNameStem: peerUin ? `${name}(${peerUin})_${stamp}` : `${name}_${stamp}`,
-+      // 格式不预设：JSON 和 HTML 都能作为下次检测的基线，交给用户选。
++      // 片段固定导 JSON：官方合并只认 JSON 源；最终的 HTML 由合并一并产出。
++      format: 'JSON',
 +    })
++
++    // 登记：这个会话的下一个完成的任务，触发自动合并
++    if (peerUin) {
++      pendingMergeRef.current.set(peer.peerUid, { sessionName: name, peerUin, type })
++    }
++
 +    setIsTaskWizardOpen(true)
 +  }, [friends, resolveResumePoint, detectHistoryGaps, addNotification, removeNotification])
 +
    const handleExportGroupAvatars = useCallback(async (groupCode: string, groupName: string) => {
      const loadingId = addNotification('info', '正在导出', `正在导出群"${groupName}"的成员头像...`)
  
-@@ -2100,6 +2359,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -2100,6 +2480,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                        onExportGroupAvatars={handleExportGroupAvatars}
                        onOpenEssenceModal={handleOpenEssenceModal}
                        onOpenGroupFilesModal={handleOpenGroupFilesModal}
@@ -334,7 +455,7 @@ index 5fd6a87..4bcb229 100644
                      />
                    </>
                  )}
-@@ -2257,11 +2517,35 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -2257,11 +2638,35 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                              variant="ghost"
                              className="h-8 w-8 rounded-full p-0 text-muted-foreground/50 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30"
                              onClick={() => {
@@ -541,10 +662,10 @@ index 6497037..aa4d29a 100644
  
 diff --git a/qce-v4-tool/lib/incremental-sync.ts b/qce-v4-tool/lib/incremental-sync.ts
 new file mode 100644
-index 0000000..d690fc0
+index 0000000..65c4b8f
 --- /dev/null
 +++ b/qce-v4-tool/lib/incremental-sync.ts
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,350 @@
 +/**
 + * QCE-CUSTOM-ADDON：增量更新的"历史补同步"检测。
 + *
@@ -758,9 +879,42 @@ index 0000000..d690fc0
 +  now?: number
 +  /** 最多回溯多少天（默认 400 天，避免超长会话打太多请求） */
 +  maxLookbackDays?: number
++  /**
++   * 进度回调。单次查询在大会话上可能要十几秒，全程无反馈会像卡死，
++   * 所以每完成一步都往外报一次。
++   */
++  onProgress?: (info: { done: number; total: number; label: string }) => void
++  /** 并发查询数，默认 4。太高会让 NapCat 侧排队更久，反而变慢。 */
++  concurrency?: number
 +}): Promise<SyncPlan> {
 +  const now = opts.now ?? Date.now()
 +  const maxLookback = (opts.maxLookbackDays ?? 400) * 86_400_000
++  const concurrency = Math.max(1, opts.concurrency ?? 4)
++  const report = opts.onProgress ?? (() => {})
++
++  /** 有并发上限的批量执行，边完成边报进度。 */
++  const runPooled = async <T, R>(
++    items: T[],
++    label: (item: T) => string,
++    baseDone: number,
++    total: number,
++    fn: (item: T) => Promise<R>,
++  ): Promise<R[]> => {
++    const results = new Array<R>(items.length)
++    let next = 0
++    let done = 0
++    const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
++      while (true) {
++        const i = next++
++        if (i >= items.length) return
++        results[i] = await fn(items[i])
++        done++
++        report({ done: baseDone + done, total, label: label(items[i]) })
++      }
++    })
++    await Promise.all(workers)
++    return results
++  }
 +
 +  if (!opts.exported.length) {
 +    return { gaps: [], scannedFiles: [], queryCount: 0, noJsonBaseline: true }
@@ -784,33 +938,59 @@ index 0000000..d690fc0
 +    months.add(day.slice(0, 7))
 +  }
 +
-+  const gaps: DayGap[] = []
-+  for (const month of Array.from(months).sort()) {
-+    const [ms, me] = monthRange(month)
-+    const monthEnd = Math.min(me, now)
-+    if (monthEnd <= ms) continue
++  const monthList = Array.from(months).sort()
++  // 总步数先按"月数"估，展开到天时再往上加
++  let totalSteps = monthList.length
 +
-+    // 该月已导出的条数
-+    let exportedInMonth = 0
-+    for (const [day, n] of byDay) {
-+      if (day.startsWith(month)) exportedInMonth += n
-+    }
++  // 第一层：按月粗查（并发）
++  const monthResults = await runPooled(
++    monthList,
++    (m) => `比对 ${m}`,
++    0,
++    totalSteps,
++    async (month) => {
++      const [ms, me] = monthRange(month)
++      const monthEnd = Math.min(me, now)
++      if (monthEnd <= ms) return { month, changed: false }
++      let exportedInMonth = 0
++      for (const [day, n] of byDay) {
++        if (day.startsWith(month)) exportedInMonth += n
++      }
++      const actualInMonth = await opts.countInRange(ms, monthEnd)
++      // 只关心"本地比导出多"。少的情况通常是导出时用了过滤条件，不该当成缺口。
++      return { month, changed: actualInMonth > exportedInMonth }
++    },
++  )
++  queryCount += monthList.length
 +
-+    const actualInMonth = await opts.countInRange(ms, monthEnd)
-+    queryCount++
-+    // 只关心"本地比导出多"。少的情况通常是导出时用了过滤条件，不该当成缺口。
-+    if (actualInMonth <= exportedInMonth) continue
-+
-+    // 该月有差异 → 展开到天
-+    for (const day of daysInMonth(month, now)) {
-+      const [ds, de] = dayRange(day)
-+      if (ds < earliestAllowed) continue
-+      const exported = byDay.get(day) || 0
-+      const actual = await opts.countInRange(ds, Math.min(de, now))
-+      queryCount++
-+      if (actual > exported) gaps.push({ day, exported, actual })
++  // 第二层：只对有差异的月份展开到天（并发）
++  const suspectDays: string[] = []
++  for (const r of monthResults) {
++    if (!r.changed) continue
++    for (const day of daysInMonth(r.month, now)) {
++      if (dayRange(day)[0] < earliestAllowed) continue
++      suspectDays.push(day)
 +    }
 +  }
++  totalSteps += suspectDays.length
++
++  const dayResults = await runPooled(
++    suspectDays,
++    (d) => `细查 ${d}`,
++    monthList.length,
++    totalSteps,
++    async (day) => {
++      const [ds, de] = dayRange(day)
++      const exported = byDay.get(day) || 0
++      const actual = await opts.countInRange(ds, Math.min(de, now))
++      return { day, exported, actual }
++    },
++  )
++  queryCount += suspectDays.length
++
++  const gaps: DayGap[] = dayResults
++    .filter((r) => r.actual > r.exported)
++    .sort((a, b) => a.day.localeCompare(b.day))
 +
 +  return { gaps, coveredUntil, scannedFiles, queryCount, noJsonBaseline: false }
 +}
