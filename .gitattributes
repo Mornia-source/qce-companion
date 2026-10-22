@@ -1,0 +1,2 @@
+# 补丁必须保持 LF 原样，否则 Windows 上 autocrlf 会把它转成 CRLF，导致 git apply 失败
+*.patch -text
