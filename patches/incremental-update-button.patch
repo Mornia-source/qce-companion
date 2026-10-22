@@ -1,8 +1,8 @@
 diff --git a/qce-v4-tool/app/page.tsx b/qce-v4-tool/app/page.tsx
-index 5fd6a87..4fd945e 100644
+index 5891c70..0fba6b2 100644
 --- a/qce-v4-tool/app/page.tsx
 +++ b/qce-v4-tool/app/page.tsx
-@@ -90,6 +90,8 @@ import { BUILD_VERSION, isNewerVersion, isMajorUpdate, extractReleaseImage } fro
+@@ -91,6 +91,8 @@ import { BUILD_VERSION, isNewerVersion, isMajorUpdate, extractReleaseImage } fro
  import { UpdatePopover, type UpdateBannerInfo } from "@/components/ui/update-banner"
  import { SecurityExposureBanner } from "@/components/ui/security-exposure-banner"
  import AuthManager from "@/lib/auth"
@@ -11,7 +11,7 @@ index 5fd6a87..4fd945e 100644
  import { classifySpecialChatType, specialKindLabel } from "@/lib/special-contacts"
  import {
    scheduledExportConfigToForm,
-@@ -387,32 +389,47 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -412,32 +414,47 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
      title: string,
      description: string,
      onConfirmDelete: () => Promise<void>,
@@ -77,7 +77,7 @@ index 5fd6a87..4fd945e 100644
          },
        ],
      })
-@@ -539,6 +556,370 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -564,6 +581,370 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
      }
    }, [addNotification])
  
@@ -448,7 +448,7 @@ index 5fd6a87..4fd945e 100644
    const handleExportGroupAvatars = useCallback(async (groupCode: string, groupName: string) => {
      const loadingId = addNotification('info', '正在导出', `正在导出群"${groupName}"的成员头像...`)
  
-@@ -867,6 +1248,47 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -892,6 +1273,47 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
      }
    }
  
@@ -496,7 +496,7 @@ index 5fd6a87..4fd945e 100644
    // 任务列表加载（首页和任务页都需要）
    useEffect(() => {
      if ((activeTab === "tasks" || activeTab === "overview") && !tasksLoadedRef.current) {
-@@ -2100,6 +2522,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -2142,6 +2564,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                        onExportGroupAvatars={handleExportGroupAvatars}
                        onOpenEssenceModal={handleOpenEssenceModal}
                        onOpenGroupFilesModal={handleOpenGroupFilesModal}
@@ -504,7 +504,7 @@ index 5fd6a87..4fd945e 100644
                      />
                    </>
                  )}
-@@ -2109,14 +2532,29 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -2151,14 +2574,29 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
              {/* ==================== TASKS ==================== */}
              {activeTab === "tasks" && (
                <div className="p-6 space-y-1">
@@ -536,7 +536,7 @@ index 5fd6a87..4fd945e 100644
                      <div
                        key={task.id}
                        className="flex items-center justify-between px-4 py-3.5 text-sm rounded-lg hover:bg-black/[0.03] dark:hover:bg-white/[0.03] transition-colors group"
-@@ -2257,11 +2695,35 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
+@@ -2359,11 +2797,35 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                              variant="ghost"
                              className="h-8 w-8 rounded-full p-0 text-muted-foreground/50 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30"
                              onClick={() => {
@@ -575,10 +575,10 @@ index 5fd6a87..4fd945e 100644
                              title="删除"
                            >
 diff --git a/qce-v4-tool/components/ui/session-list.tsx b/qce-v4-tool/components/ui/session-list.tsx
-index 679f3ff..8c439f6 100644
+index 6c55f63..8d69a61 100644
 --- a/qce-v4-tool/components/ui/session-list.tsx
 +++ b/qce-v4-tool/components/ui/session-list.tsx
-@@ -131,6 +131,17 @@ export interface SessionListProps {
+@@ -141,6 +141,17 @@ export interface SessionListProps {
    onExportGroupAvatars?: (groupCode: string, groupName: string) => void
    onOpenEssenceModal?: (groupCode: string, groupName: string) => void
    onOpenGroupFilesModal?: (groupCode: string, groupName: string) => void
@@ -596,7 +596,7 @@ index 679f3ff..8c439f6 100644
  }
  
  
-@@ -155,6 +166,7 @@ function SessionListComponent({
+@@ -165,6 +176,7 @@ function SessionListComponent({
    onExportGroupAvatars,
    onOpenEssenceModal,
    onOpenGroupFilesModal,
@@ -604,7 +604,7 @@ index 679f3ff..8c439f6 100644
  }: SessionListProps) {
    const {
      search,
-@@ -349,6 +361,9 @@ function SessionListComponent({
+@@ -371,6 +383,9 @@ function SessionListComponent({
              >
                预览
              </button>
@@ -614,7 +614,51 @@ index 679f3ff..8c439f6 100644
              {isGroup && group ? (
                <div className="flex items-center bg-white dark:bg-neutral-900 border border-black/5 dark:border-white/10 shadow-[0_1px_2px_rgba(0,0,0,0.04)] rounded-full overflow-hidden hover:border-black/10 transition-all">
                  <button
-@@ -391,28 +406,69 @@ function SessionListComponent({
+@@ -416,8 +431,14 @@ function SessionListComponent({
+               <div className="flex items-center bg-white dark:bg-neutral-900 border border-black/5 dark:border-white/10 shadow-[0_1px_2px_rgba(0,0,0,0.04)] rounded-full overflow-hidden hover:border-black/10 transition-all">
+                 <button
+                   className="inline-flex items-center justify-center h-7 pl-3 pr-2 text-[12px] font-medium text-neutral-700 dark:text-neutral-200 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-50 dark:hover:bg-white/5 transition-colors border-r border-neutral-200/80 dark:border-white/10"
++                  title={item.lastSuccessfulExportAt ? "只拉取自上次导出以来的新消息" : undefined}
+                   onClick={(e: React.MouseEvent) => {
+                     e.stopPropagation()
++                    // QCE-CUSTOM-ADDON：导出过的好友走增量更新
++                    if (item.lastSuccessfulExportAt) {
++                      onIncrementalUpdate?.(item.type, item.id, item.name, { chatType: 1, peerUid: item.id }, item.lastSuccessfulExportAt)
++                      return
++                    }
+                     onOpenTaskWizard?.({
+                       chatType: 1,
+                       peerUid: item.id,
+@@ -426,7 +447,7 @@ function SessionListComponent({
+                     })
+                   }}
+                 >
+-                  导出
++                  {item.lastSuccessfulExportAt ? "更新" : "导出"}
+                 </button>
+                 <DropdownMenu>
+                   <DropdownMenuTrigger asChild>
+@@ -439,6 +460,19 @@ function SessionListComponent({
+                     </button>
+                   </DropdownMenuTrigger>
+                   <DropdownMenuContent align="end" className="w-40">
++                    {/* QCE-CUSTOM-ADDON */}
++                    {!!item.lastSuccessfulExportAt && (
++                      <DropdownMenuItem
++                        onClick={() => onOpenTaskWizard?.({
++                          chatType: 1,
++                          peerUid: item.id,
++                          peerUin: String(friend.uin || ""),
++                          sessionName: item.name,
++                        })}
++                      >
++                        重新导出全部
++                      </DropdownMenuItem>
++                    )}
+                     <DropdownMenuItem
+                       onClick={() =>
+                         onOpenTaskWizard?.({
+@@ -456,28 +490,69 @@ function SessionListComponent({
                  </DropdownMenu>
                </div>
              ) : (
@@ -623,7 +667,7 @@ index 679f3ff..8c439f6 100644
 -                onClick={(e: React.MouseEvent) => {
 -                  e.stopPropagation()
 -                  onOpenTaskWizard?.({
--                    chatType: isGroup ? 2 : 1,
+-                    chatType,
 -                    peerUid: item.id,
 -                    peerUin: isGroup
 -                      ? item.id
@@ -648,13 +692,13 @@ index 679f3ff..8c439f6 100644
 +                        item.type,
 +                        item.id,
 +                        item.name,
-+                        { chatType: 1, peerUid: item.id },
++                        { chatType, peerUid: item.id },
 +                        item.lastSuccessfulExportAt,
 +                      )
 +                      return
 +                    }
 +                    onOpenTaskWizard?.({
-+                      chatType: isGroup ? 2 : 1,
++                      chatType,
 +                      peerUid: item.id,
 +                      peerUin: isGroup
 +                        ? item.id
@@ -678,7 +722,7 @@ index 679f3ff..8c439f6 100644
 +                    <DropdownMenuContent align="end" className="w-40">
 +                      <DropdownMenuItem
 +                        onClick={() => onOpenTaskWizard?.({
-+                          chatType: isGroup ? 2 : 1,
++                          chatType,
 +                          peerUid: item.id,
 +                          peerUin: isGroup ? item.id : String((item.raw as Friend).uin || ""),
 +                          sessionName: item.name,
@@ -702,10 +746,10 @@ index 679f3ff..8c439f6 100644
    return (
      <div className="space-y-0">
 diff --git a/qce-v4-tool/components/ui/task-wizard.tsx b/qce-v4-tool/components/ui/task-wizard.tsx
-index 797df4f..9013879 100644
+index fc1d818..ec78672 100644
 --- a/qce-v4-tool/components/ui/task-wizard.tsx
 +++ b/qce-v4-tool/components/ui/task-wizard.tsx
-@@ -178,6 +178,9 @@ const mergePrefilledForm = (
+@@ -193,6 +193,9 @@ const mergePrefilledForm = (
      preferGroupMemberName:
        prefilledData.preferGroupMemberName ?? base.preferGroupMemberName,
      debugExport: prefilledData.debugExport ?? base.debugExport,
@@ -715,9 +759,9 @@ index 797df4f..9013879 100644
    }
  }
  
-@@ -259,6 +262,10 @@ export function TaskWizard({
-       prefilledData
-     )
+@@ -318,6 +321,10 @@ export function TaskWizard({
+       setTimeRangeMode("all")
+     }
      setForm(nextForm)
 +    // QCE-CUSTOM-ADDON：预填了起始时间（增量续传）时把时间范围切到"自定义"，
 +    // 否则界面高亮"全部消息"、日期选择器也不显示，但提交时却带着 startTime，
@@ -727,10 +771,10 @@ index 797df4f..9013879 100644
    }, [prefilledData, isOpen])
  
 diff --git a/qce-v4-tool/lib/export-request.ts b/qce-v4-tool/lib/export-request.ts
-index 6497037..aa4d29a 100644
+index 11f515b..fb82dd1 100644
 --- a/qce-v4-tool/lib/export-request.ts
 +++ b/qce-v4-tool/lib/export-request.ts
-@@ -56,6 +56,10 @@ export function buildExportRequest(form: CreateTaskForm): BuiltExportRequest {
+@@ -72,6 +72,10 @@ export function buildExportRequest(form: CreateTaskForm): BuiltExportRequest {
        ...(Array.isArray(form.skipDownloadResourceTypes) && form.skipDownloadResourceTypes.length > 0 && {
          skipDownloadResourceTypes: form.skipDownloadResourceTypes,
        }),
@@ -739,13 +783,13 @@ index 6497037..aa4d29a 100644
 +        customFileNameStem: form.customFileNameStem.trim(),
 +      }),
      },
-   }
- 
+     ...(isRoamingExport && {
+       roaming: {
 diff --git a/qce-v4-tool/types/api.ts b/qce-v4-tool/types/api.ts
-index 7f16047..1efeadd 100644
+index dfa6928..6fa4616 100644
 --- a/qce-v4-tool/types/api.ts
 +++ b/qce-v4-tool/types/api.ts
-@@ -243,6 +243,11 @@ export interface CreateTaskForm {
+@@ -281,6 +281,11 @@ export interface CreateTaskForm {
     * 'image' | 'video' | 'audio' | 'file'
     */
    skipDownloadResourceTypes?: Array<'image' | 'video' | 'audio' | 'file'>
@@ -757,16 +801,15 @@ index 7f16047..1efeadd 100644
  }
  
  export interface CreateTaskRequest {
-@@ -284,6 +289,8 @@ export interface CreateTaskRequest {
+@@ -322,6 +327,8 @@ export interface CreateTaskRequest {
      debugExport?: boolean
      /** 仅保留元数据、跳过下载的资源类型（Issue #341） */
      skipDownloadResourceTypes?: Array<'image' | 'video' | 'audio' | 'file'>
 +    /** QCE-CUSTOM-ADDON：自定义导出文件名主干（不含扩展名） */
 +    customFileNameStem?: string
    }
- }
- 
-
+   /** 仅 `/api/messages/roaming/export` 使用的有界扫描配置。 */
+   roaming?: {
 diff --git a/qce-v4-tool/lib/incremental-sync.ts b/qce-v4-tool/lib/incremental-sync.ts
 new file mode 100644
 index 0000000..65c4b8f
